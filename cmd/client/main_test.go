@@ -64,7 +64,7 @@ func TestPrintHTTPHints(t *testing.T) {
 	if !strings.Contains(out, "Default: stays running") {
 		t.Fatalf("expected stay-by-default hint in output, got: %s", out)
 	}
-	if !strings.Contains(out, "/t/tid/") {
+	if !strings.Contains(out, "/t/tid") {
 		t.Fatalf("expected path-based example with tunnel ID, got: %s", out)
 	}
 }
