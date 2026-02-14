@@ -32,6 +32,7 @@ ForTunnels Client is a command-line tool that connects to the ForTunnels server 
 git clone https://github.com/fortunnels/client.git
 cd client
 go build -o ./bin/client ./cmd/client
+# On Windows: go build -o ./bin/client.exe ./cmd/client
 ```
 
 Or via `make`:
@@ -40,6 +41,8 @@ Or via `make`:
 make build          # binary in ./bin/client (includes checks)
 make build-fast     # without tests/coverage
 ```
+
+On Windows (or when cross-compiling with `GOOS=windows`), the binary is produced as `bin/client.exe` instead of `bin/client`.
 
 The `BIN_DIR` environment variable controls the output directory:
 

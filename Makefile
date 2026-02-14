@@ -6,6 +6,8 @@ export GOWORK=off
 BIN_DIR ?= ./bin
 ARTIFACTS_DIR ?= ./dist
 VERSION ?= dev
+TARGET_OS := $(or $(GOOS),$(shell go env GOOS))
+BINARY_NAME := $(if $(filter windows,$(TARGET_OS)),client.exe,client)
 DEFAULT_SERVER_URL ?= https://fortunnels.ru
 
 .PHONY: all build build-fast test tidy clean release release-dev format lint security check
@@ -23,13 +25,13 @@ test:
 build: check
 	@echo "==> go build (client)"
 	mkdir -p $(BIN_DIR)
-	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN_DIR)/client ./cmd/client
+	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN_DIR)/$(BINARY_NAME) ./cmd/client
 
 
 build-fast:
 	@echo "==> go build (client, fast)"
 	mkdir -p $(BIN_DIR)
-	go build -trimpath -ldflags "-X main.version=$(VERSION)" -o $(BIN_DIR)/client ./cmd/client
+	go build -trimpath -ldflags "-X main.version=$(VERSION)" -o $(BIN_DIR)/$(BINARY_NAME) ./cmd/client
 
 clean:
 	rm -rf $(BIN_DIR) $(ARTIFACTS_DIR)
