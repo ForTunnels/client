@@ -7,7 +7,7 @@ BIN_DIR ?= ./bin
 ARTIFACTS_DIR ?= ./dist
 VERSION ?= dev
 TARGET_OS := $(or $(GOOS),$(shell go env GOOS))
-BINARY_NAME := $(if $(filter windows,$(TARGET_OS)),client.exe,client)
+BINARY_NAME := $(if $(filter windows,$(TARGET_OS)),client.msi,client)
 DEFAULT_SERVER_URL ?= https://fortunnels.ru
 
 .PHONY: all build build-fast test tidy clean release release-dev format lint security check
@@ -138,11 +138,11 @@ release: tidy
 	build_zip() { \
 		ARCH="$$1"; SUFFIX="$$2"; \
 		echo "   -> windows/$$ARCH (zip)"; \
-		CGO_ENABLED=0 GOOS=windows GOARCH="$$ARCH" go build -ldflags "$$LDFLAGS" -o /tmp/client.exe ./cmd/client; \
-		mv /tmp/client.exe /tmp/fortunnels.exe; \
-		zip -j -q "$(ARTIFACTS_DIR)/fortunnels-$$SUFFIX.zip" /tmp/fortunnels.exe; \
-		cp /tmp/fortunnels.exe "$(ARTIFACTS_DIR)/fortunnels-$$SUFFIX.exe"; \
-		rm -f /tmp/fortunnels.exe; \
+		CGO_ENABLED=0 GOOS=windows GOARCH="$$ARCH" go build -ldflags "$$LDFLAGS" -o /tmp/client.msi ./cmd/client; \
+		mv /tmp/client.msi /tmp/fortunnels.msi; \
+		zip -j -q "$(ARTIFACTS_DIR)/fortunnels-$$SUFFIX.zip" /tmp/fortunnels.msi; \
+		cp /tmp/fortunnels.msi "$(ARTIFACTS_DIR)/fortunnels-$$SUFFIX.msi"; \
+		rm -f /tmp/fortunnels.msi; \
 	}; \
 	build_tar darwin amd64 macos+amd64; \
 	build_tar darwin arm64 macos+arm64; \
@@ -154,11 +154,11 @@ release: tidy
 	# MSIX fallback: Creates a copy of Windows amd64 executable as .msix \
 	# for basic compatibility. For proper MSIX packaging, use: make msix-package \
 	if [ ! -f "$(ARTIFACTS_DIR)/fortunnels.msix" ]; then \
-		if [ -f "$(ARTIFACTS_DIR)/fortunnels-windows+amd64.exe" ]; then \
-			cp "$(ARTIFACTS_DIR)/fortunnels-windows+amd64.exe" "$(ARTIFACTS_DIR)/fortunnels.msix"; \
+		if [ -f "$(ARTIFACTS_DIR)/fortunnels-windows+amd64.msi" ]; then \
+			cp "$(ARTIFACTS_DIR)/fortunnels-windows+amd64.msi" "$(ARTIFACTS_DIR)/fortunnels.msix"; \
 			echo "   -> Created fallback MSIX package (copy of Windows amd64 executable)"; \
 		else \
-			echo "Warning: fortunnels-windows+amd64.exe not found. MSIX fallback was not created."; \
+			echo "Warning: fortunnels-windows+amd64.msi not found. MSIX fallback was not created."; \
 		fi; \
 	fi; \
 	cd "$(ARTIFACTS_DIR)" && shasum -a 256 fortunnels-* > SHA256SUMS.txt; \

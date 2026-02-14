@@ -3,6 +3,7 @@
 /coverage.out
 
 *.exe
+*.msi
 *.dll
 *.so
 *.dylib
