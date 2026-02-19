@@ -155,7 +155,7 @@ func warnOnSensitiveFlagUsage(cfg *Config) {
 	}
 	entries := []secretFlag{
 		{label: "--token", used: cfg.TokenFlagProvided, value: cfg.Token},
-		{label: "--password", used: cfg.PasswordFlagProvided, value: cfg.Password},
+		{label: "--pass", used: cfg.PasswordFlagProvided, value: cfg.Password},
 		{label: "--psk", used: cfg.PSKFlagProvided, value: cfg.PSK},
 		{label: "--dp-auth-token", used: cfg.DPAuthTokenFlagProvided, value: cfg.DPAuthToken},
 		{label: "--dp-auth-secret", used: cfg.DPAuthSecretFlagProvided, value: cfg.DPAuthSecret},

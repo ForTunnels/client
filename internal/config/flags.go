@@ -118,11 +118,11 @@ func Parse() (*Config, error) {
 
 	fs := flag.CommandLine
 	fs.StringVar(&cfg.Login, "login", cfg.Login, "Login for server authentication")
-	fs.StringVar(&cfg.Password, "password", cfg.Password, "Password for server authentication")
+	fs.StringVar(&cfg.Password, "pass", cfg.Password, "Password for server authentication")
 	fs.StringVar(&cfg.Token, "token", cfg.Token, "Bearer JWT to authorize API calls")
-	fs.StringVar(&cfg.PasswordFile, "password-file", cfg.PasswordFile, "Read password from file")
+	fs.StringVar(&cfg.PasswordFile, "pass-file", cfg.PasswordFile, "Read password from file")
 	fs.StringVar(&cfg.TokenFile, "token-file", cfg.TokenFile, "Read bearer token from file")
-	fs.BoolVar(&cfg.PasswordFromStdin, "password-stdin", cfg.PasswordFromStdin, "Read password from stdin")
+	fs.BoolVar(&cfg.PasswordFromStdin, "pass-stdin", cfg.PasswordFromStdin, "Read password from stdin")
 	fs.BoolVar(&cfg.TokenFromStdin, "token-stdin", cfg.TokenFromStdin, "Read bearer token from stdin")
 	fs.StringVar(&cfg.ServerURL, "server", cfg.ServerURL, "Server URL")
 	fs.BoolVar(&cfg.AllowInsecureHTTP, "allow-insecure-http", cfg.AllowInsecureHTTP, "Allow non-local HTTP server URL (unsafe)")
@@ -300,7 +300,7 @@ func detectFlagOverrides() (localProvided, serverProvided, protocolProvided bool
 	}
 	secrets = secretFlagSet{
 		token:        flagProvided("token"),
-		password:     flagProvided("password"),
+		password:     flagProvided("pass"),
 		psk:          flagProvided("psk"),
 		dpAuthToken:  flagProvided("dp-auth-token"),
 		dpAuthSecret: flagProvided("dp-auth-secret"),
@@ -326,7 +326,7 @@ func applySecretSources(cfg *Config) error {
 			envVar:    "FORTUNNELS_TOKEN",
 		},
 		{
-			label:     "password",
+			label:     "pass",
 			value:     &cfg.Password,
 			file:      &cfg.PasswordFile,
 			fromStdin: &cfg.PasswordFromStdin,

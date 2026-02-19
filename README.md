@@ -142,9 +142,9 @@ ssh -p 4000 user@localhost
 ### Authentication notes
 
 - `-login` - login for server authentication
-- `-password` - password for server authentication
-- `-password-file` - read password from a file
-- `-password-stdin` - read password from stdin
+- `-pass` - password for server authentication
+- `-pass-file` - read password from a file
+- `-pass-stdin` - read password from stdin
 - `-token` - Bearer JWT token for API authorization
 - `-token-file` - read token from a file
 - `-token-stdin` - read token from stdin
@@ -266,7 +266,7 @@ Show prototypes to customers:
 
 **Fixes:**
 
-- Check authentication: use `-login`/`-password` or `-token`
+- Check authentication: use `-login`/`-pass` or `-token`
 - Ensure the local service is reachable: `curl http://127.0.0.1:8000`
 - Check address format: must be `host:port` (e.g. `127.0.0.1:8000`)
 
