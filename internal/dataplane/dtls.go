@@ -9,7 +9,7 @@ import (
 	"net/url"
 	"sync"
 
-	dtls "github.com/pion/dtls/v2"
+	dtls "github.com/pion/dtls/v3"
 )
 
 // startDTLSDataPlaneUDP listens on udpListen and forwards via DTLS to server
@@ -31,16 +31,15 @@ func StartDTLSDataPlaneUDP(serverURL, tunnelID, authToken, udpDst, udpListen str
 	}
 	host := net.JoinHostPort(u.Hostname(), "4444")
 	// DTLS dial with proper certificate validation
-	dcfg := &dtls.Config{
-		InsecureSkipVerify:   false,
-		ExtendedMasterSecret: dtls.RequireExtendedMasterSecret,
-		ServerName:           u.Hostname(),
-	}
 	uaddr, err := net.ResolveUDPAddr("udp", host)
 	if err != nil {
 		return err
 	}
-	conn, err := dtls.Dial("udp", uaddr, dcfg)
+	conn, err := dtls.DialWithOptions("udp", uaddr,
+		dtls.WithInsecureSkipVerify(false),
+		dtls.WithExtendedMasterSecret(dtls.RequireExtendedMasterSecret),
+		dtls.WithServerName(u.Hostname()),
+	)
 	if err != nil {
 		return err
 	}
