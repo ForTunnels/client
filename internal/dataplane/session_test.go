@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
-
 	"github.com/fortunnels/client/internal/config"
+	"github.com/gorilla/websocket"
+	"github.com/stretchr/testify/require"
 )
 
 func TestNextBackoff(t *testing.T) {
@@ -110,9 +110,7 @@ func TestManagerEnsureSession_Stopped(t *testing.T) {
 
 	// EnsureSession should return error when stopped
 	_, err := mgr.EnsureSession()
-	if err == nil {
-		t.Error("Manager.EnsureSession() should return error when stopped")
-	}
+	require.Error(t, err, "Manager.EnsureSession() should return error when stopped")
 	if err.Error() != "stopped" {
 		t.Errorf("Manager.EnsureSession() error = %q, want %q", err.Error(), "stopped")
 	}
@@ -239,9 +237,7 @@ func TestManager_SessionDialParams(t *testing.T) {
 
 func TestBuildWebSocketURL(t *testing.T) {
 	wsURL, origin, err := buildWebSocketURL("https://example.com", "tunnel-123")
-	if err != nil {
-		t.Fatalf("buildWebSocketURL() unexpected error: %v", err)
-	}
+	require.NoError(t, err, "buildWebSocketURL() unexpected error: %v")
 	if !strings.HasPrefix(wsURL, "wss://example.com/ws") {
 		t.Errorf("wsURL = %q, want prefix wss://example.com/ws", wsURL)
 	}

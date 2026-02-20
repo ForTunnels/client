@@ -7,6 +7,9 @@ import (
 	"bytes"
 	"io"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // mockReadWriteCloser implements io.ReadWriteCloser for testing
@@ -48,9 +51,7 @@ func TestNewClientPSK(t *testing.T) {
 	secret := []byte("test-secret")
 	psk := NewClientPSK(secret)
 
-	if psk == nil {
-		t.Fatal("NewClientPSK() returned nil")
-	}
+	require.NotNil(t, psk, "NewClientPSK() returned nil")
 	if psk.secret == nil {
 		t.Error("NewClientPSK() secret is nil")
 	}
@@ -67,9 +68,7 @@ func TestClientPSK_Wrap(t *testing.T) {
 	base := &mockReadWriteCloser{}
 	wrapped := psk.Wrap(base, tunnelID)
 
-	if wrapped == nil {
-		t.Fatal("ClientPSK.Wrap() returned nil")
-	}
+	require.NotNil(t, wrapped, "ClientPSK.Wrap() returned nil")
 	if wrapped == base {
 		t.Error("ClientPSK.Wrap() should return a new wrapper, not the base")
 	}
@@ -101,12 +100,8 @@ func TestClientAEAD_Write(t *testing.T) {
 
 	testData := []byte("hello, world")
 	n, err := wrapped.Write(testData)
-	if err != nil {
-		t.Fatalf("ClientAEAD.Write() error = %v", err)
-	}
-	if n != len(testData) {
-		t.Errorf("ClientAEAD.Write() = %d, want %d", n, len(testData))
-	}
+	require.NoError(t, err, "ClientAEAD.Write() error = %v")
+	assert.Equal(t, len(testData), n, "ClientAEAD.Write() = %d, want %d")
 
 	// Verify data was written to base (should be encrypted)
 	if len(base.writeData) == 0 {
@@ -139,9 +134,7 @@ func TestClientAEAD_Read(t *testing.T) {
 	// Write some data to get encrypted output
 	testData := []byte("hello, world")
 	_, err := writer.Write(testData)
-	if err != nil {
-		t.Fatalf("ClientAEAD.Write() error = %v", err)
-	}
+	require.NoError(t, err, "ClientAEAD.Write() error = %v")
 
 	// Create a reader with the encrypted data
 	readerBase := &mockReadWriteCloser{
@@ -152,12 +145,8 @@ func TestClientAEAD_Read(t *testing.T) {
 	// Read and decrypt
 	buf := make([]byte, 1024)
 	n, err := reader.Read(buf)
-	if err != nil {
-		t.Fatalf("ClientAEAD.Read() error = %v", err)
-	}
-	if n != len(testData) {
-		t.Errorf("ClientAEAD.Read() = %d, want %d", n, len(testData))
-	}
+	require.NoError(t, err, "ClientAEAD.Read() error = %v")
+	assert.Equal(t, len(testData), n, "ClientAEAD.Read() = %d, want %d")
 	if !bytes.Equal(buf[:n], testData) {
 		t.Errorf("ClientAEAD.Read() = %q, want %q", buf[:n], testData)
 	}
@@ -183,9 +172,7 @@ func TestClientAEAD_Read_ShortBuffer(t *testing.T) {
 	// Small buffer should trigger ErrShortBuffer
 	smallBuf := make([]byte, 5)
 	n, err := reader.Read(smallBuf)
-	if err != io.ErrShortBuffer {
-		t.Errorf("ClientAEAD.Read() with small buffer error = %v, want %v", err, io.ErrShortBuffer)
-	}
+	assert.Equal(t, io.ErrShortBuffer, err, "ClientAEAD.Read() with small buffer error = %v, want %v")
 	if n != 5 {
 		t.Errorf("ClientAEAD.Read() with small buffer = %d, want 5", n)
 	}
@@ -204,9 +191,7 @@ func TestClientAEAD_Read_InvalidFrame(t *testing.T) {
 
 	buf := make([]byte, 1024)
 	_, err := reader.Read(buf)
-	if err == nil {
-		t.Error("ClientAEAD.Read() with invalid frame should return error")
-	}
+	require.Error(t, err, "ClientAEAD.Read() with invalid frame should return error")
 }
 
 func TestClientAEAD_Read_CorruptedData(t *testing.T) {
@@ -228,9 +213,7 @@ func TestClientAEAD_Read_CorruptedData(t *testing.T) {
 
 	buf := make([]byte, 1024)
 	_, err := reader.Read(buf)
-	if err == nil {
-		t.Error("ClientAEAD.Read() with corrupted data should return error")
-	}
+	require.Error(t, err, "ClientAEAD.Read() with corrupted data should return error")
 }
 
 func TestClientAEAD_Close(t *testing.T) {
@@ -264,9 +247,7 @@ func TestClientAEAD_RoundTrip(t *testing.T) {
 	// Write test data
 	testData := []byte("round trip test data")
 	_, err := writer.Write(testData)
-	if err != nil {
-		t.Fatalf("ClientAEAD.Write() error = %v", err)
-	}
+	require.NoError(t, err, "ClientAEAD.Write() error = %v")
 
 	// Create reader with the written encrypted data
 	readerBase := &mockReadWriteCloser{
@@ -277,9 +258,7 @@ func TestClientAEAD_RoundTrip(t *testing.T) {
 	// Read and verify decryption
 	readBuf := make([]byte, 1024)
 	n, err := reader.Read(readBuf)
-	if err != nil {
-		t.Fatalf("ClientAEAD.Read() error = %v", err)
-	}
+	require.NoError(t, err, "ClientAEAD.Read() error = %v")
 	if !bytes.Equal(readBuf[:n], testData) {
 		t.Errorf("ClientAEAD round-trip: read %q, want %q", readBuf[:n], testData)
 	}

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/fortunnels/client/internal/config"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestNewStrategy(t *testing.T) {
@@ -119,9 +120,7 @@ func TestStrategyRun(t *testing.T) {
 			},
 		}
 		err := strategy.Run()
-		if err != expectedErr {
-			t.Errorf("Strategy.Run() = %v, want %v", err, expectedErr)
-		}
+		assert.Equal(t, expectedErr, err, "Strategy.Run() = %v, want %v")
 	})
 
 	t.Run("runner returns nil", func(t *testing.T) {
@@ -167,9 +166,7 @@ func TestSimpleStrategy(t *testing.T) {
 	}
 
 	err := strategy.Run()
-	if err != runnerErr {
-		t.Errorf("simpleStrategy() runner = %v, want %v", err, runnerErr)
-	}
+	assert.Equal(t, runnerErr, err, "simpleStrategy() runner = %v, want %v")
 }
 
 func contains(s, substr string) bool {

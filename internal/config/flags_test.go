@@ -8,6 +8,8 @@ import (
 	"testing"
 
 	"github.com/fortunnels/client/internal/support"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestParsePort(t *testing.T) {
@@ -60,18 +62,10 @@ func TestLooksLikeHostPort(t *testing.T) {
 
 func TestGetProtocolConstants(t *testing.T) {
 	http, https, tcp, udp := GetProtocolConstants()
-	if http != protoHTTP {
-		t.Errorf("GetProtocolConstants() http = %q, want %q", http, protoHTTP)
-	}
-	if https != protoHTTPS {
-		t.Errorf("GetProtocolConstants() https = %q, want %q", https, protoHTTPS)
-	}
-	if tcp != protoTCP {
-		t.Errorf("GetProtocolConstants() tcp = %q, want %q", tcp, protoTCP)
-	}
-	if udp != protoUDP {
-		t.Errorf("GetProtocolConstants() udp = %q, want %q", udp, protoUDP)
-	}
+	assert.Equal(t, protoHTTP, http, "GetProtocolConstants() http = %v, want %v")
+	assert.Equal(t, protoHTTPS, https, "GetProtocolConstants() https = %v, want %v")
+	assert.Equal(t, protoTCP, tcp, "GetProtocolConstants() tcp = %v, want %v")
+	assert.Equal(t, protoUDP, udp, "GetProtocolConstants() udp = %v, want %v")
 }
 
 func TestSetDefaultServerURL(t *testing.T) {
@@ -122,7 +116,7 @@ func TestApplySecretSourcesFromEnv(t *testing.T) {
 
 	cfg := &Config{}
 	if err := applySecretSources(cfg); err != nil {
-		t.Fatalf("applySecretSources() unexpected error: %v", err)
+	require.NoError(t, err, "applySecretSources() unexpected error: %v")
 	}
 	if cfg.Token != "env-token" {
 		t.Fatalf("Token = %q, want %q", cfg.Token, "env-token")
@@ -139,20 +133,18 @@ func TestApplySecretSourcesFilePrecedence(t *testing.T) {
 	t.Setenv("FORTUNNELS_TOKEN", "env-token")
 
 	f, err := os.CreateTemp("", "token")
-	if err != nil {
-		t.Fatalf("CreateTemp(): %v", err)
-	}
+	require.NoError(t, err, "CreateTemp(): %v")
 	defer os.Remove(f.Name())
 	if _, err := f.WriteString("file-token"); err != nil {
-		t.Fatalf("WriteString(): %v", err)
+	require.NoError(t, err, "WriteString(): %v")
 	}
 	if err := f.Close(); err != nil {
-		t.Fatalf("Close(): %v", err)
+	require.NoError(t, err, "Close(): %v")
 	}
 
 	cfg := &Config{TokenFile: f.Name()}
 	if err := applySecretSources(cfg); err != nil {
-		t.Fatalf("applySecretSources() unexpected error: %v", err)
+	require.NoError(t, err, "applySecretSources() unexpected error: %v")
 	}
 	if cfg.Token != "file-token" {
 		t.Fatalf("Token = %q, want %q", cfg.Token, "file-token")

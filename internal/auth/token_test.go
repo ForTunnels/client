@@ -8,6 +8,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
 )
 
 func TestComputeDataPlaneAuth(t *testing.T) {
@@ -28,14 +30,10 @@ func TestComputeDataPlaneAuth(t *testing.T) {
 			result := ComputeDataPlaneAuth(tt.tunnelID, tt.dpAuthToken, tt.dpAuthSecret)
 			switch {
 			case tt.dpAuthToken != "":
-				if result != tt.dpAuthToken {
-					t.Errorf("ComputeDataPlaneAuth() = %q, want %q", result, tt.dpAuthToken)
-				}
+				assert.Equal(t, tt.dpAuthToken, result, "ComputeDataPlaneAuth() = %v, want %v")
 			case tt.dpAuthSecret != "":
 				expected := computeHMAC(tt.dpAuthSecret, tt.tunnelID)
-				if result != expected {
-					t.Errorf("ComputeDataPlaneAuth() = %q, want %q", result, expected)
-				}
+				assert.Equal(t, expected, result, "ComputeDataPlaneAuth() = %v, want %v")
 			default:
 				if result != "" {
 					t.Errorf("ComputeDataPlaneAuth() = %q, want empty", result)
@@ -62,13 +60,9 @@ func TestComputeHMAC(t *testing.T) {
 	h.Write([]byte(message))
 	expected := hex.EncodeToString(h.Sum(nil))
 
-	if result != expected {
-		t.Errorf("computeHMAC() = %q, want %q", result, expected)
-	}
+	assert.Equal(t, expected, result, "computeHMAC() = %v, want %v")
 
 	// Test consistency
 	result2 := computeHMAC(secret, message)
-	if result != result2 {
-		t.Errorf("computeHMAC() should be consistent, got %q and %q", result, result2)
-	}
+	assert.Equal(t, result2, result, "computeHMAC() should be consistent, got %v and %v")
 }

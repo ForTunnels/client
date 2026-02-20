@@ -6,6 +6,9 @@ package control
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestResponseUnmarshal tests that Response struct can correctly unmarshal JSON from server
@@ -26,16 +29,10 @@ func TestResponseUnmarshal(t *testing.T) {
 	}`
 
 	var resp Response
-	if err := json.Unmarshal([]byte(serverResponse), &resp); err != nil {
-		t.Fatalf("Failed to unmarshal response: %v", err)
-	}
-
-	if resp.UserID != 100 {
-		t.Errorf("Expected UserID=100, got %d", resp.UserID)
-	}
-	if resp.ID != "test-tunnel-123" {
-		t.Errorf("Expected ID=test-tunnel-123, got %s", resp.ID)
-	}
+	err := json.Unmarshal([]byte(serverResponse), &resp)
+	require.NoError(t, err, "Failed to unmarshal response")
+	assert.Equal(t, int64(100), resp.UserID, "Expected UserID=100")
+	assert.Equal(t, "test-tunnel-123", resp.ID, "Expected ID=test-tunnel-123")
 }
 
 // TestResponseUnmarshalGuestUser tests unmarshaling with guest user (user_id=0)
@@ -55,14 +52,8 @@ func TestResponseUnmarshalGuestUser(t *testing.T) {
 	}`
 
 	var resp Response
-	if err := json.Unmarshal([]byte(serverResponse), &resp); err != nil {
-		t.Fatalf("Failed to unmarshal guest response: %v", err)
-	}
-
-	if resp.UserID != 0 {
-		t.Errorf("Expected UserID=0 for guest, got %d", resp.UserID)
-	}
-	if !resp.IsGuest {
-		t.Error("Expected IsGuest=true")
-	}
+	err := json.Unmarshal([]byte(serverResponse), &resp)
+	require.NoError(t, err, "Failed to unmarshal guest response")
+	assert.Equal(t, int64(0), resp.UserID, "Expected UserID=0 for guest")
+	assert.True(t, resp.IsGuest, "Expected IsGuest=true")
 }

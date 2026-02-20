@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/stretchr/testify/require"
 )
 
 func TestWSConnReadSkipsNonBinaryFrames(t *testing.T) {
@@ -29,20 +30,14 @@ func TestWSConnReadSkipsNonBinaryFrames(t *testing.T) {
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("dial ws: %v", err)
-	}
+	require.NoError(t, err, "dial ws")
 	defer conn.Close()
 
 	wsc := NewWSConn(conn)
 	buf := make([]byte, MaxWebSocketFrameSize)
 	n, err := wsc.Read(buf)
-	if err != nil {
-		t.Fatalf("Read() unexpected error: %v", err)
-	}
-	if string(buf[:n]) != "ok" {
-		t.Fatalf("Read() = %q, want %q", string(buf[:n]), "ok")
-	}
+	require.NoError(t, err, "Read()")
+	require.Equal(t, "ok", string(buf[:n]), "Read()")
 }
 
 func TestWSConnReadRejectsLargeBuffer(t *testing.T) {
@@ -59,16 +54,13 @@ func TestWSConnReadRejectsLargeBuffer(t *testing.T) {
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("dial ws: %v", err)
-	}
+	require.NoError(t, err, "dial ws")
 	defer conn.Close()
 
 	wsc := NewWSConn(conn)
 	buf := make([]byte, MaxWebSocketFrameSize+1)
-	if _, err := wsc.Read(buf); err == nil {
-		t.Fatalf("Read() expected error for oversized buffer")
-	}
+	_, err = wsc.Read(buf)
+	require.Error(t, err, "Read() expected error for oversized buffer")
 }
 
 func TestWSConnWriteRejectsLargeMessage(t *testing.T) {
@@ -85,14 +77,11 @@ func TestWSConnWriteRejectsLargeMessage(t *testing.T) {
 
 	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
-	if err != nil {
-		t.Fatalf("dial ws: %v", err)
-	}
+	require.NoError(t, err, "dial ws")
 	defer conn.Close()
 
 	wsc := NewWSConn(conn)
 	msg := make([]byte, MaxWebSocketMessageSize+1)
-	if _, err := wsc.Write(msg); err == nil {
-		t.Fatalf("Write() expected error for oversized message")
-	}
+	_, err = wsc.Write(msg)
+	require.Error(t, err, "Write() expected error for oversized message")
 }

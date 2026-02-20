@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"io"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 // mockWriter implements io.Writer for testing
@@ -108,9 +110,7 @@ func TestWriteUDPPacket_WriteError(t *testing.T) {
 	}
 	payload := []byte("test")
 	err := writeUDPPacket(writer, payload)
-	if err == nil {
-		t.Error("writeUDPPacket() with write error should return error")
-	}
+	require.Error(t, err, "writeUDPPacket() with write error should return error")
 }
 
 func TestReadUDPPacket(t *testing.T) {
@@ -192,9 +192,7 @@ func TestReadUDPPacket_EOF(t *testing.T) {
 		readErr: io.EOF,
 	}
 	_, err := readUDPPacket(reader)
-	if err == nil {
-		t.Error("readUDPPacket() with EOF should return error")
-	}
+	require.Error(t, err, "readUDPPacket() with EOF should return error")
 }
 
 func TestSendUDPPreface(t *testing.T) {
@@ -268,7 +266,5 @@ func TestSendUDPPreface_WriteError(t *testing.T) {
 		writeErr: io.ErrClosedPipe,
 	}
 	err := sendUDPPreface(writer, "127.0.0.1:8080", "tunnel-123")
-	if err == nil {
-		t.Error("sendUDPPreface() with write error should return error")
-	}
+	require.Error(t, err, "sendUDPPreface() with write error should return error")
 }

@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/fortunnels/client/internal/config"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestStartUDPLocalToStream_WithMocks(t *testing.T) {
@@ -26,9 +28,7 @@ func TestStartUDPLocalToStream_WithMocks(t *testing.T) {
 
 	// Create a UDP connection that will be closed immediately to trigger error
 	uc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	if err != nil {
-		t.Fatalf("Failed to create UDP listener: %v", err)
-	}
+	require.NoError(t, err, "Failed to create UDP listener: %v")
 
 	errCh := make(chan error, 1)
 	var lastSrcMu sync.RWMutex
@@ -43,9 +43,7 @@ func TestStartUDPLocalToStream_WithMocks(t *testing.T) {
 	// Wait for error
 	select {
 	case err := <-errCh:
-		if err == nil {
-			t.Error("startUDPLocalToStream() should return error when connection closes")
-		}
+		require.Error(t, err, "startUDPLocalToStream() should return error when connection closes")
 	case <-time.After(500 * time.Millisecond):
 		// Timeout is acceptable - function may handle error differently
 	}
@@ -58,9 +56,7 @@ func TestStartStreamToUDPLocal_WithMocks(t *testing.T) {
 	}
 
 	uc, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 0})
-	if err != nil {
-		t.Fatalf("Failed to create UDP listener: %v", err)
-	}
+	require.NoError(t, err, "Failed to create UDP listener: %v")
 	defer uc.Close()
 
 	errCh := make(chan error, 1)
@@ -89,9 +85,7 @@ func TestManager_EnsureSession_Stopped(t *testing.T) {
 	mgr.Close()
 
 	_, err := mgr.EnsureSession()
-	if err == nil {
-		t.Error("Manager.EnsureSession() should return error when stopped")
-	}
+	require.Error(t, err, "Manager.EnsureSession() should return error when stopped")
 }
 
 func TestManager_InitializeSession_Error(t *testing.T) {
@@ -109,9 +103,7 @@ func TestManager_InitializeSession_Error(t *testing.T) {
 
 	select {
 	case <-done:
-		if err == nil {
-			t.Error("Manager.EnsureSession() should return error with invalid server")
-		}
+		require.Error(t, err, "Manager.EnsureSession() should return error with invalid server")
 	case <-time.After(10 * time.Second):
 		// Do not call mgr.Close() here: EnsureSession holds the manager lock during
 		// dial and backoff sleep, so Close() would block until the goroutine returns.
@@ -154,9 +146,7 @@ func TestReadStreamDestination_EdgeCases(t *testing.T) {
 				t.Errorf("readStreamDestination() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			if got != tt.want {
-				t.Errorf("readStreamDestination() = %q, want %q", got, tt.want)
-			}
+			assert.Equal(t, tt.want, got, "readStreamDestination() = %v, want %v")
 		})
 	}
 }

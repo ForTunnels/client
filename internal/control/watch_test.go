@@ -14,9 +14,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gorilla/websocket"
-
 	"github.com/fortunnels/client/internal/config"
+	"github.com/gorilla/websocket"
+	"github.com/stretchr/testify/assert"
 )
 
 func TestCheckTunnelDeleted(t *testing.T) {
@@ -57,9 +57,7 @@ func TestCheckTunnelDeleted(t *testing.T) {
 
 			client := &http.Client{Timeout: 2 * time.Second}
 			result := checkTunnelDeleted(client, server.URL, "tunnel-123")
-			if result != tt.expected {
-				t.Errorf("checkTunnelDeleted() = %v, want %v", result, tt.expected)
-			}
+			assert.Equal(t, tt.expected, result, "checkTunnelDeleted() = %v, want %v")
 		})
 	}
 }
@@ -158,9 +156,7 @@ func TestExtractTunnelCloseReason(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := extractTunnelCloseReason(tt.msg)
-			if result != tt.expected {
-				t.Errorf("extractTunnelCloseReason() = %q, want %q", result, tt.expected)
-			}
+			assert.Equal(t, tt.expected, result, "extractTunnelCloseReason() = %v, want %v")
 		})
 	}
 }
@@ -206,9 +202,7 @@ func TestHandleControlMessage(t *testing.T) {
 			var doneOnce sync.Once
 
 			result := handleControlMessage(tt.msg, ackCh, intervalCh, done, &doneOnce, 10*time.Second)
-			if result != tt.shouldReturn {
-				t.Errorf("handleControlMessage() = %v, want %v", result, tt.shouldReturn)
-			}
+			assert.Equal(t, tt.shouldReturn, result, "handleControlMessage() = %v, want %v")
 		})
 	}
 }
@@ -238,9 +232,7 @@ func TestUpdateFallbackInterval(t *testing.T) {
 
 	select {
 	case d := <-intervalCh:
-		if d != 5*time.Second {
-			t.Errorf("updateFallbackInterval() = %v, want %v", d, 5*time.Second)
-		}
+		assert.Equal(t, 5*time.Second, d, "updateFallbackInterval() = %v, want %v")
 	case <-time.After(100 * time.Millisecond):
 		t.Error("updateFallbackInterval() did not send interval")
 	}

@@ -12,6 +12,7 @@ import (
 
 	"github.com/fortunnels/client/internal/config"
 	sec "github.com/fortunnels/client/internal/security"
+	"github.com/stretchr/testify/assert"
 )
 
 // mockCloser implements io.Closer for testing
@@ -140,9 +141,7 @@ func TestIsClosedPipe(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			result := isClosedPipe(tt.err)
-			if result != tt.expected {
-				t.Errorf("isClosedPipe() = %v, want %v", result, tt.expected)
-			}
+			assert.Equal(t, tt.expected, result, "isClosedPipe() = %v, want %v")
 		})
 	}
 }

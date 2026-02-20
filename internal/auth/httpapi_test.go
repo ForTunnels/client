@@ -11,6 +11,8 @@ import (
 	"testing"
 
 	"github.com/fortunnels/client/internal/config"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSetupAuthentication_WithToken(t *testing.T) {
@@ -20,15 +22,9 @@ func TestSetupAuthentication_WithToken(t *testing.T) {
 	}
 
 	client, bearer, err := SetupAuthentication(cfg)
-	if err != nil {
-		t.Fatalf("SetupAuthentication() error = %v", err)
-	}
-	if bearer != "bearer-token-123" {
-		t.Errorf("SetupAuthentication() bearer = %q, want %q", bearer, "bearer-token-123")
-	}
-	if client != nil {
-		t.Error("SetupAuthentication() with token should not create HTTP client")
-	}
+	require.NoError(t, err, "SetupAuthentication()")
+	assert.Equal(t, "bearer-token-123", bearer, "SetupAuthentication() bearer")
+	assert.Nil(t, client, "SetupAuthentication() with token should not create HTTP client")
 }
 
 func TestSetupAuthentication_WithLoginPassword(t *testing.T) {
@@ -69,29 +65,19 @@ func TestSetupAuthentication_WithLoginPassword(t *testing.T) {
 	}
 
 	client, bearer, err := SetupAuthentication(cfg)
-	if err != nil {
-		t.Fatalf("SetupAuthentication() error = %v", err)
-	}
-	if bearer != "" {
-		t.Errorf("SetupAuthentication() bearer = %q, want empty", bearer)
-	}
-	if client == nil {
-		t.Fatal("SetupAuthentication() with login/password should create HTTP client")
-	}
+	require.NoError(t, err, "SetupAuthentication()")
+	assert.Empty(t, bearer, "SetupAuthentication() bearer")
+	require.NotNil(t, client, "SetupAuthentication() with login/password should create HTTP client")
 
 	// Verify cookie jar was set
-	if client.Jar == nil {
-		t.Error("SetupAuthentication() should set cookie jar")
-	}
+	assert.NotNil(t, client.Jar, "SetupAuthentication() should set cookie jar")
 
 	// Verify cookies are stored by checking the jar
 	// The cookie jar should have cookies from the login request
 	serverURL, _ := url.Parse(server.URL)
 	cookieCount := len(client.Jar.Cookies(serverURL))
 	// Note: Cookies are set by the server response, verify jar exists and can store cookies
-	if client.Jar == nil {
-		t.Error("SetupAuthentication() should create cookie jar")
-	}
+	assert.NotNil(t, client.Jar, "SetupAuthentication() should create cookie jar")
 	// Cookie count may be 0 if server doesn't set cookies, but jar should exist
 	_ = cookieCount // Verify jar is functional
 }
@@ -110,9 +96,7 @@ func TestSetupAuthentication_WithLoginPassword_InvalidCredentials(t *testing.T) 
 	}
 
 	_, _, err := SetupAuthentication(cfg)
-	if err == nil {
-		t.Error("SetupAuthentication() with invalid credentials should return error")
-	}
+	require.Error(t, err, "SetupAuthentication() with invalid credentials should return error")
 }
 
 func TestSetupAuthentication_Empty(t *testing.T) {
@@ -121,15 +105,9 @@ func TestSetupAuthentication_Empty(t *testing.T) {
 	}
 
 	client, bearer, err := SetupAuthentication(cfg)
-	if err != nil {
-		t.Fatalf("SetupAuthentication() error = %v", err)
-	}
-	if bearer != "" {
-		t.Errorf("SetupAuthentication() bearer = %q, want empty", bearer)
-	}
-	if client != nil {
-		t.Error("SetupAuthentication() with empty config should not create HTTP client")
-	}
+	require.NoError(t, err, "SetupAuthentication()")
+	assert.Empty(t, bearer, "SetupAuthentication() bearer")
+	assert.Nil(t, client, "SetupAuthentication() with empty config should not create HTTP client")
 }
 
 func TestSetupAuthentication_WithToken_Whitespace(t *testing.T) {
@@ -139,12 +117,8 @@ func TestSetupAuthentication_WithToken_Whitespace(t *testing.T) {
 	}
 
 	_, bearer, err := SetupAuthentication(cfg)
-	if err != nil {
-		t.Fatalf("SetupAuthentication() error = %v", err)
-	}
-	if bearer != "bearer-token-123" {
-		t.Errorf("SetupAuthentication() bearer = %q, want %q", bearer, "bearer-token-123")
-	}
+	require.NoError(t, err, "SetupAuthentication()")
+	assert.Equal(t, "bearer-token-123", bearer, "SetupAuthentication() bearer")
 }
 
 func TestLoginLocal(t *testing.T) {
@@ -175,9 +149,7 @@ func TestLoginLocal(t *testing.T) {
 
 	client := &http.Client{}
 	err := loginLocal(client, server.URL, "testuser", "testpass")
-	if err != nil {
-		t.Errorf("loginLocal() error = %v", err)
-	}
+	assert.NoError(t, err, "loginLocal()")
 }
 
 func TestLoginLocal_InvalidCredentials(t *testing.T) {
@@ -188,9 +160,7 @@ func TestLoginLocal_InvalidCredentials(t *testing.T) {
 
 	client := &http.Client{}
 	err := loginLocal(client, server.URL, "testuser", "wrongpass")
-	if err == nil {
-		t.Error("loginLocal() with invalid credentials should return error")
-	}
+	require.Error(t, err, "loginLocal() with invalid credentials should return error")
 }
 
 func TestLoginLocal_ServerError(t *testing.T) {
@@ -201,18 +171,14 @@ func TestLoginLocal_ServerError(t *testing.T) {
 
 	client := &http.Client{}
 	err := loginLocal(client, server.URL, "testuser", "testpass")
-	if err == nil {
-		t.Error("loginLocal() with server error should return error")
-	}
+	require.Error(t, err, "loginLocal() with server error should return error")
 }
 
 func TestLoginLocal_NetworkError(t *testing.T) {
 	// Use invalid URL to simulate network error
 	client := &http.Client{}
 	err := loginLocal(client, "http://invalid-url-that-does-not-exist:9999", "testuser", "testpass")
-	if err == nil {
-		t.Error("loginLocal() with network error should return error")
-	}
+	require.Error(t, err, "loginLocal() with network error should return error")
 }
 
 func TestLoginLocal_InvalidJSON(t *testing.T) {
@@ -225,7 +191,5 @@ func TestLoginLocal_InvalidJSON(t *testing.T) {
 
 	client := &http.Client{}
 	err := loginLocal(client, server.URL, "testuser", "testpass")
-	if err != nil {
-		t.Errorf("loginLocal() error = %v", err)
-	}
+	assert.NoError(t, err, "loginLocal()")
 }

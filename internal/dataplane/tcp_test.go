@@ -9,6 +9,9 @@ import (
 	"net"
 	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestReadStreamDestination(t *testing.T) {
@@ -58,9 +61,7 @@ func TestReadStreamDestination(t *testing.T) {
 				t.Errorf("readStreamDestination() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
-			if got != tt.want {
-				t.Errorf("readStreamDestination() = %q, want %q", got, tt.want)
-			}
+			assert.Equal(t, tt.want, got, "readStreamDestination() = %v, want %v")
 		})
 	}
 }
@@ -68,9 +69,7 @@ func TestReadStreamDestination(t *testing.T) {
 func TestReadStreamDestination_EOF(t *testing.T) {
 	rd := bufio.NewReader(strings.NewReader(""))
 	_, err := readStreamDestination(rd)
-	if err == nil {
-		t.Error("readStreamDestination() with EOF should return error")
-	}
+	require.Error(t, err, "readStreamDestination() with EOF should return error")
 }
 
 // mockReadWriteCloser implements io.ReadWriteCloser for testing
@@ -113,9 +112,7 @@ func TestServeIncomingStream_InvalidPreface(t *testing.T) {
 		readData: []byte("invalid\n"),
 	}
 	err := serveIncomingStream(stream)
-	if err == nil {
-		t.Error("serveIncomingStream() with invalid preface should return error")
-	}
+	require.Error(t, err, "serveIncomingStream() with invalid preface should return error")
 	if !stream.closed {
 		t.Error("serveIncomingStream() should close stream on error")
 	}
@@ -137,17 +134,13 @@ func TestServeIncomingStream_DialError(t *testing.T) {
 		readData: []byte(preface),
 	}
 	err := serveIncomingStream(stream)
-	if err == nil {
-		t.Error("serveIncomingStream() with dial error should return error")
-	}
+	require.Error(t, err, "serveIncomingStream() with dial error should return error")
 }
 
 // createTestTCPServer starts a TCP server and returns its address and a cleanup function.
 func createTestTCPServer(t *testing.T, handler func(net.Conn)) (addr string, cleanup func()) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Failed to create test server: %v", err)
-	}
+	require.NoError(t, err, "Failed to create test server: %v")
 	addr = ln.Addr().String()
 
 	go func() {
@@ -201,9 +194,7 @@ func TestReadStreamDestination_WithWhitespace(t *testing.T) {
 	if err != nil {
 		t.Errorf("readStreamDestination() error = %v", err)
 	}
-	if got != "127.0.0.1:8080" {
-		t.Errorf("readStreamDestination() = %q, want %q", got, "127.0.0.1:8080")
-	}
+	assert.Equal(t, "127.0.0.1:8080", got, "readStreamDestination() = %v, want %v")
 }
 
 func TestReadStreamDestination_MultipleFields(t *testing.T) {
@@ -213,7 +204,5 @@ func TestReadStreamDestination_MultipleFields(t *testing.T) {
 	if err != nil {
 		t.Errorf("readStreamDestination() error = %v", err)
 	}
-	if got != "127.0.0.1:8080" {
-		t.Errorf("readStreamDestination() = %q, want %q", got, "127.0.0.1:8080")
-	}
+	assert.Equal(t, "127.0.0.1:8080", got, "readStreamDestination() = %v, want %v")
 }
