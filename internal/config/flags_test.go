@@ -116,7 +116,7 @@ func TestApplySecretSourcesFromEnv(t *testing.T) {
 
 	cfg := &Config{}
 	if err := applySecretSources(cfg); err != nil {
-	require.NoError(t, err, "applySecretSources() unexpected error: %v")
+		require.NoError(t, err, "applySecretSources() unexpected error: %v")
 	}
 	if cfg.Token != "env-token" {
 		t.Fatalf("Token = %q, want %q", cfg.Token, "env-token")
@@ -136,15 +136,15 @@ func TestApplySecretSourcesFilePrecedence(t *testing.T) {
 	require.NoError(t, err, "CreateTemp(): %v")
 	defer os.Remove(f.Name())
 	if _, err := f.WriteString("file-token"); err != nil {
-	require.NoError(t, err, "WriteString(): %v")
+		require.NoError(t, err, "WriteString(): %v")
 	}
 	if err := f.Close(); err != nil {
-	require.NoError(t, err, "Close(): %v")
+		require.NoError(t, err, "Close(): %v")
 	}
 
 	cfg := &Config{TokenFile: f.Name()}
 	if err := applySecretSources(cfg); err != nil {
-	require.NoError(t, err, "applySecretSources() unexpected error: %v")
+		require.NoError(t, err, "applySecretSources() unexpected error: %v")
 	}
 	if cfg.Token != "file-token" {
 		t.Fatalf("Token = %q, want %q", cfg.Token, "file-token")
