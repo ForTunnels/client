@@ -21,8 +21,27 @@ func Validate(cfg *Config) {
 	validateTargetAddressIfNeeded(cfg)
 	validateParallelAndBackoff(cfg)
 	enforceEncryptionRequirements(cfg)
+	if err := validateLoginPasswordPair(cfg); err != nil {
+		fmt.Println("❌", err.Error())
+		os.Exit(2)
+	}
 	validateTCPListenAddress(cfg)
 	warnOnSensitiveFlagUsage(cfg)
+}
+
+// validateLoginPasswordPair returns an error if --login is provided without a password.
+// Password may come from --pass, --pass-file, --pass-stdin, or FORTUNNELS_PASSWORD.
+func validateLoginPasswordPair(cfg *Config) error {
+	if strings.TrimSpace(cfg.Token) != "" {
+		return nil
+	}
+	if strings.TrimSpace(cfg.Login) == "" {
+		return nil
+	}
+	if strings.TrimSpace(cfg.Password) != "" {
+		return nil
+	}
+	return fmt.Errorf("when using --login, provide password via --pass, --pass-file, --pass-stdin, or FORTUNNELS_PASSWORD")
 }
 
 func validateProtocolFlag(protocol string) {

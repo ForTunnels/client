@@ -4,7 +4,10 @@
 package config
 
 import (
+	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestValidateProtocolFlag(t *testing.T) {
@@ -82,5 +85,69 @@ func TestIsLocalServerHost(t *testing.T) {
 		if got := isLocalServerHost(tt.host); got != tt.expected {
 			t.Fatalf("isLocalServerHost(%q) = %v, want %v", tt.host, got, tt.expected)
 		}
+	}
+}
+
+func TestValidateLoginRequiresPassword(t *testing.T) {
+	tests := []struct {
+		name     string
+		login    string
+		password string
+		token    string
+		wantErr  bool
+	}{
+		{
+			name:     "login without password fails",
+			login:    "user",
+			password: "",
+			token:    "",
+			wantErr:  true,
+		},
+		{
+			name:     "login with password passes",
+			login:    "user",
+			password: "secret",
+			token:    "",
+			wantErr:  false,
+		},
+		{
+			name:     "login with token passes (token auth takes precedence)",
+			login:    "user",
+			password: "",
+			token:    "bearer-token",
+			wantErr:  false,
+		},
+		{
+			name:     "no login passes",
+			login:    "",
+			password: "",
+			token:    "",
+			wantErr:  false,
+		},
+		{
+			name:     "login with whitespace-only password fails",
+			login:    "user",
+			password: "   ",
+			token:    "",
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &Config{
+				Login:    tt.login,
+				Password: tt.password,
+				Token:    tt.token,
+			}
+			err := validateLoginPasswordPair(cfg)
+			if tt.wantErr {
+				require.Error(t, err)
+				require.True(t, strings.Contains(err.Error(), "password"),
+					"error should mention password, got: %s", err.Error())
+			} else {
+				require.NoError(t, err)
+			}
+		})
 	}
 }
