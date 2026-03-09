@@ -125,6 +125,5 @@ func PrintHTTPHints(serverURL string, t *Response) {
 		t.ID,
 	)
 	fmt.Printf("- Host-based: %s (use Host header)\n", t.PublicURL)
-	fmt.Println("- Default: stays running")
 	_ = os.Stdout.Sync()
 }
