@@ -142,19 +142,25 @@ func TestServeIncomingStream_DialError(t *testing.T) {
 // TestServeIncomingStream_DialFailureWritesSetupError verifies that on backend dial failure,
 // the client writes a setup error JSON to the stream before closing (for server-side classification).
 func TestServeIncomingStream_DialFailureWritesSetupError(t *testing.T) {
-	// Use a valid address format that will fail with connection refused (port not listening)
-	preface := `{"dst": "127.0.0.1:19999", "proto": "tcp"}` + "\n"
+	// Use an address that is guaranteed unavailable: bind and release a port, then dial it.
+	// This avoids fixed-port assumptions and yields a deterministic connection-refused failure.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	addr := ln.Addr().String()
+	ln.Close()
+
+	preface := `{"dst": "` + addr + `", "proto": "tcp"}` + "\n"
 	stream := &mockTCPReadWriteCloser{
 		readData: []byte(preface),
 	}
-	err := serveIncomingStream(stream, nil)
+	err = serveIncomingStream(stream, nil)
 	require.Error(t, err, "serveIncomingStream() with dial error should return error")
 	require.True(t, stream.closed, "stream should be closed on error")
-	// Client must write setup error payload before close so server can classify as connect_refused
+	// Client must write setup error payload before close so server can classify the failure
 	written := string(stream.writeData)
 	require.Contains(t, written, `"ok":false`, "should write setup error with ok:false")
 	require.Contains(t, written, `"error"`, "should write error message for server classification")
-	require.Contains(t, strings.ToLower(written), "refused", "error should mention connection refused")
+	// Do not assert on error message text (e.g. "refused") — it is OS/locale dependent
 }
 
 // TestServeIncomingStream_SuccessWritesSetupAck verifies that on successful backend dial,

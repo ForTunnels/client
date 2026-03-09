@@ -173,10 +173,12 @@ func StartDataPlaneServeListenReconnect(
 }
 
 // BackendStateReporter is called on backend dial success/failure for CLI transition messages.
+// Success means TCP dial reached the target; it does not imply HTTP/TLS readiness.
 // If nil, no reporting is done.
 type BackendStateReporter func(dst string, err error)
 
-// NewBackendStateReporter returns a reporter that prints one-time messages on backend down/up transitions.
+// NewBackendStateReporter returns a reporter that prints one-time messages on backend dial
+// down/up transitions. Messages reflect transport-level reachability only, not full proxy readiness.
 func NewBackendStateReporter() BackendStateReporter {
 	var mu sync.Mutex
 	state := make(map[string]bool) // dst -> wasDown
@@ -191,7 +193,7 @@ func NewBackendStateReporter() BackendStateReporter {
 			state[dst] = true
 		} else {
 			if wasDown {
-				fmt.Printf("✅ Backend recovered for %s\n", dst)
+				fmt.Printf("✅ Backend reachable for %s\n", dst)
 			}
 			state[dst] = false
 		}
