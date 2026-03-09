@@ -19,6 +19,7 @@ func TestIsBenignCopyError(t *testing.T) {
 		{"nil error", nil, true},
 		{"EOF", io.EOF, true},
 		{"UnexpectedEOF", io.ErrUnexpectedEOF, true},
+		{"ErrClosedPipe", io.ErrClosedPipe, true},
 		{"net.ErrClosed", net.ErrClosed, true},
 		{"connection closed message", &net.OpError{Err: &os.SyscallError{Err: net.ErrClosed}}, true},
 	}

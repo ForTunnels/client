@@ -172,7 +172,33 @@ func StartDataPlaneServeListenReconnect(
 	}
 }
 
-func StartDataPlaneServeIncoming(serverURL, tunnelID string, runtime config.RuntimeSettings) error {
+// BackendStateReporter is called on backend dial success/failure for CLI transition messages.
+// If nil, no reporting is done.
+type BackendStateReporter func(dst string, err error)
+
+// NewBackendStateReporter returns a reporter that prints one-time messages on backend down/up transitions.
+func NewBackendStateReporter() BackendStateReporter {
+	var mu sync.Mutex
+	state := make(map[string]bool) // dst -> wasDown
+	return func(dst string, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		wasDown := state[dst]
+		if err != nil {
+			if !wasDown {
+				fmt.Printf("⚠️  Backend unreachable for %s\n", dst)
+			}
+			state[dst] = true
+		} else {
+			if wasDown {
+				fmt.Printf("✅ Backend recovered for %s\n", dst)
+			}
+			state[dst] = false
+		}
+	}
+}
+
+func StartDataPlaneServeIncoming(serverURL, tunnelID string, runtime config.RuntimeSettings, reporter BackendStateReporter) error {
 	mgr := NewManager(serverURL, tunnelID, time.Second, 30*time.Second, runtime)
 	defer mgr.Close()
 	for {
@@ -188,14 +214,24 @@ func StartDataPlaneServeIncoming(serverURL, tunnelID string, runtime config.Runt
 			continue
 		}
 		go func(s io.ReadWriteCloser) {
-			if err := serveIncomingStream(s); err != nil && !support.IsBenignCopyError(err) {
+			if err := serveIncomingStream(s, reporter); err != nil && !support.IsBenignCopyError(err) {
 				log.Printf("incoming stream error: %v", err)
 			}
 		}(st)
 	}
 }
 
-func serveIncomingStream(stream io.ReadWriteCloser) error {
+// setupAck and setupError are JSON lines sent to the server for proxy error classification.
+const setupAckLine = `{"ok":true}` + "\n"
+
+func writeSetupError(stream io.Writer, err error) {
+	payload := map[string]interface{}{"ok": false, "error": err.Error()}
+	if b, e := json.Marshal(payload); e == nil {
+		_, _ = stream.Write(append(b, '\n'))
+	}
+}
+
+func serveIncomingStream(stream io.ReadWriteCloser, reporter BackendStateReporter) error {
 	defer stream.Close()
 	rd := bufio.NewReader(stream)
 	dst, err := readStreamDestination(rd)
@@ -204,23 +240,96 @@ func serveIncomingStream(stream io.ReadWriteCloser) error {
 	}
 	bc, err := net.Dial("tcp", dst)
 	if err != nil {
+		if reporter != nil {
+			reporter(dst, err)
+		}
+		writeSetupError(stream, err)
 		return err
 	}
 	defer bc.Close()
 
-	if rd.Buffered() > 0 {
-		if _, err := io.Copy(bc, rd); err != nil {
-			return err
-		}
+	if reporter != nil {
+		reporter(dst, nil)
+	}
+	if _, err := stream.Write([]byte(setupAckLine)); err != nil {
+		return err
 	}
 
-	go func() {
-		if _, err := io.Copy(stream, bc); err != nil && !support.IsBenignCopyError(err) {
-			log.Printf("Error copying from backend to stream: %v", err)
-		}
-	}()
-	if _, err := io.Copy(bc, stream); err != nil && !support.IsBenignCopyError(err) {
+	if err := flushBufferedBytes(rd, bc); err != nil {
 		return err
+	}
+	return bridgeStreamAndBackend(stream, rd, bc)
+}
+
+func bridgeStreamAndBackend(stream io.ReadWriteCloser, streamReader io.Reader, backendConn net.Conn) error {
+	errCh := make(chan error, 2)
+
+	go func() {
+		_, err := io.Copy(stream, backendConn)
+		// Propagate response EOF to the server-side proxy. Without this, HTTP/1.0
+		// responses without Content-Length can hang until client timeout.
+		closeWriteOrClose(stream)
+		if err != nil && !support.IsBenignCopyError(err) {
+			errCh <- err
+			return
+		}
+		errCh <- nil
+	}()
+
+	go func() {
+		_, err := io.Copy(backendConn, streamReader)
+		closeWriteIfPossible(backendConn)
+		if err != nil && !support.IsBenignCopyError(err) {
+			errCh <- err
+			return
+		}
+		errCh <- nil
+	}()
+
+	first := <-errCh
+	second := <-errCh
+	if first != nil {
+		return first
+	}
+	return second
+}
+
+func closeWriteIfPossible(c interface{}) {
+	type closeWriter interface{ CloseWrite() error }
+	if cw, ok := c.(closeWriter); ok {
+		_ = cw.CloseWrite()
+	}
+}
+
+func closeWriteOrClose(stream io.ReadWriteCloser) {
+	type closeWriter interface{ CloseWrite() error }
+	if cw, ok := stream.(closeWriter); ok {
+		_ = cw.CloseWrite()
+		return
+	}
+	_ = stream.Close()
+}
+
+// flushBufferedBytes forwards only bytes already buffered in rd without blocking.
+// This prevents a deadlock where io.Copy waits for stream close before bridge startup.
+func flushBufferedBytes(rd *bufio.Reader, dst io.Writer) error {
+	buffered := rd.Buffered()
+	if buffered == 0 {
+		return nil
+	}
+	buf := make([]byte, buffered)
+	if _, err := io.ReadFull(rd, buf); err != nil {
+		return err
+	}
+	for len(buf) > 0 {
+		n, err := dst.Write(buf)
+		if err != nil {
+			return err
+		}
+		if n == 0 {
+			return io.ErrShortWrite
+		}
+		buf = buf[n:]
 	}
 	return nil
 }

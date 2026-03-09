@@ -102,18 +102,25 @@ func runClientWorkflow(cfg *config.Config) {
 // handleHTTPProtocol delegates to tunnel package and TCP data-plane
 func handleHTTPProtocol(cfg *config.Config, runtime config.RuntimeSettings, tun *ctrl.Response) {
 	if isHTTPProtocol(cfg.Protocol) {
+		reporter := dp.NewBackendStateReporter()
+		errCh := make(chan error, 1)
 		go func() {
-			//nolint:errcheck // fire-and-forget background serve
-			_ = dp.StartDataPlaneServeIncoming(cfg.ServerURL, tun.ID, runtime)
+			errCh <- dp.StartDataPlaneServeIncoming(cfg.ServerURL, tun.ID, runtime, reporter)
 		}()
-	}
 
-	if isHTTPProtocol(cfg.Protocol) {
 		ctrl.PrintHTTPHints(cfg.ServerURL, tun)
 		fmt.Println("\n🔌 Serving HTTP over data-plane. Press Ctrl+C to stop.")
 		sigc := make(chan os.Signal, 1)
 		signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
-		<-sigc
+		select {
+		case <-sigc:
+			return
+		case err := <-errCh:
+			if err != nil {
+				fmt.Printf("❌ Data-plane serve stopped: %v\n", err)
+				os.Exit(1)
+			}
+		}
 	}
 }
 

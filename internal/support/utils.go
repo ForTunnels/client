@@ -19,11 +19,12 @@ func IsBenignCopyError(err error) bool {
 	if err == nil {
 		return true
 	}
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, net.ErrClosed) {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed) {
 		return true
 	}
 	msg := err.Error()
 	if strings.Contains(msg, "use of closed network connection") ||
+		strings.Contains(msg, "closed pipe") ||
 		strings.Contains(msg, "broken pipe") ||
 		strings.Contains(msg, "connection reset by peer") ||
 		strings.Contains(msg, "stream closed") ||
