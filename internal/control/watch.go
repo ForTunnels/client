@@ -157,7 +157,7 @@ func startFallbackTunnelWatcherWithAuth(
 			case <-ticker.C:
 				terminal, status, statusCode := checkTunnelTerminalWithStatusImpl(client, serverURL, tunnelID, bearer)
 				if terminal {
-					fmt.Printf("🔴 Tunnel deleted or expired on server\n")
+					fmt.Println(MsgTunnelRemovedExiting)
 					doneOnce.Do(func() { close(done) })
 					return
 				}
@@ -167,7 +167,7 @@ func startFallbackTunnelWatcherWithAuth(
 				}
 				if statusCode >= 400 {
 					consecutiveFailures++
-					if statusCode == 401 || statusCode == 403 {
+					if statusCode == 403 {
 						log.Printf("[WARN] auth failure from fallback GET tunnelID=%s status=%d", tunnelID, statusCode)
 					}
 					if consecutiveFailures >= 2 {
@@ -190,6 +190,13 @@ func startFallbackTunnelWatcherWithAuth(
 
 // StatusExpired is the wire value for expired tunnel status.
 const StatusExpired = "expired"
+
+// Lifecycle contract: HTTP 401 from GET /api/tunnels?id=<id> means the tunnel
+// was removed for this client session/token (e.g. revoked access, session expired).
+// The client must treat this as terminal and exit cleanly. Technical details
+// (tunnelID, auth mode, status) belong in DEBUG; user-facing output uses
+// MsgTunnelRemovedExiting.
+const MsgTunnelRemovedExiting = "Tunnel was removed. Exiting."
 
 const (
 	statusActive    = "active"
@@ -229,7 +236,7 @@ func RunFallbackLifecyclePoller(httpClient *http.Client, serverURL, tunnelID, be
 		<-ticker.C
 		terminal, status, statusCode := checkTunnelTerminalWithStatusImpl(client, serverURL, tunnelID, bearer)
 		if terminal {
-			fmt.Printf("🔴 Tunnel deleted or expired on server\n")
+			fmt.Println(MsgTunnelRemovedExiting)
 			onTerminal()
 			return
 		}
@@ -239,7 +246,7 @@ func RunFallbackLifecyclePoller(httpClient *http.Client, serverURL, tunnelID, be
 		}
 		if statusCode >= 400 {
 			consecutiveFailures++
-			if statusCode == 401 || statusCode == 403 {
+			if statusCode == 403 {
 				log.Printf("[WARN] auth failure from fallback GET tunnelID=%s status=%d", tunnelID, statusCode)
 			}
 			if consecutiveFailures >= 2 {
@@ -283,6 +290,13 @@ func checkTunnelTerminalWithStatusImpl(client *http.Client, serverURL, tunnelID,
 		return false, "", 0
 	}
 	defer resp.Body.Close()
+
+	// 401/403 from GET /api/tunnels?id=<id> means tunnel removed or access revoked for this session/token.
+	// Treat as terminal immediately; no failure counters or WARN spam.
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		logDebug("%d from GET /api/tunnels → terminal (tunnel removed or access revoked)", resp.StatusCode)
+		return true, "", resp.StatusCode
+	}
 
 	var payload map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
@@ -389,14 +403,15 @@ func handleControlMessage(
 		fmt.Printf("💓 Ping received at %s\n", time.Now().Format("15:04:05"))
 	case "tunnel_closed":
 		reason := extractTunnelCloseReason(msg)
-		fmt.Printf("🔴 Tunnel closed on server (reason: %s)\n", reason)
+		logDebug("tunnel_closed reason=%s", reason)
+		fmt.Println(MsgTunnelRemovedExiting)
 		doneOnce.Do(func() { close(done) })
 		return true
 	case "tunnel_updated":
 		if payload := extractPayload(msg); payload != nil {
 			if status, ok := payload["status"].(string); ok {
 				if status == StatusExpired {
-					fmt.Printf("🔴 Tunnel expired on server\n")
+					fmt.Println(MsgTunnelRemovedExiting)
 					doneOnce.Do(func() { close(done) })
 					return true
 				}

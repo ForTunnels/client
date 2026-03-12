@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -126,7 +127,7 @@ func TestCheckTunnelTerminalWithStatus_CookieJarAuth(t *testing.T) {
 	assert.Equal(t, http.StatusOK, status)
 }
 
-func TestCheckTunnelTerminalWithStatus_UnauthorizedNonTerminal(t *testing.T) {
+func TestCheckTunnelTerminalWithStatus_UnauthorizedTerminal(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
@@ -134,8 +135,110 @@ func TestCheckTunnelTerminalWithStatus_UnauthorizedNonTerminal(t *testing.T) {
 
 	client := &http.Client{Timeout: 2 * time.Second}
 	terminal, status := checkTunnelTerminalWithStatus(client, server.URL, "t1", "")
-	assert.False(t, terminal, "401 should not be treated as terminal (tunnel may still exist)")
+	assert.True(t, terminal, "401 from GET /api/tunnels means tunnel removed for this session; must be terminal")
 	assert.Equal(t, http.StatusUnauthorized, status)
+}
+
+func TestCheckTunnelTerminalWithStatus_ForbiddenTerminal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	terminal, status := checkTunnelTerminalWithStatus(client, server.URL, "t1", "")
+	assert.True(t, terminal, "403 from GET /api/tunnels means access revoked; must be terminal")
+	assert.Equal(t, http.StatusForbidden, status)
+}
+
+func TestRunFallbackLifecyclePoller_401TriggersOnTerminalAndFriendlyMessage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	terminalCh := make(chan struct{}, 1)
+	var onTerminalCalled int
+	onTerminal := func() {
+		onTerminalCalled++
+		close(terminalCh)
+	}
+
+	output := captureStdout(t, func() {
+		go RunFallbackLifecyclePoller(client, server.URL, "t1", "", onTerminal, 20*time.Millisecond)
+		select {
+		case <-terminalCh:
+			// Good
+		case <-time.After(2 * time.Second):
+			t.Fatal("onTerminal was not called within 2s")
+		}
+	})
+
+	assert.Equal(t, 1, onTerminalCalled, "onTerminal must be called exactly once")
+	assert.Contains(t, output, MsgTunnelRemovedExiting, "friendly removal message must be printed")
+}
+
+func TestRunFallbackLifecyclePoller_401NoWarnSpam(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	terminalCh := make(chan struct{}, 1)
+	onTerminal := func() { close(terminalCh) }
+
+	var logBuf bytes.Buffer
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(os.Stderr)
+
+	go RunFallbackLifecyclePoller(client, server.URL, "t1", "", onTerminal, 20*time.Millisecond)
+	select {
+	case <-terminalCh:
+		// Good
+	case <-time.After(2 * time.Second):
+		t.Fatal("onTerminal was not called within 2s")
+	}
+
+	logOut := logBuf.String()
+	assert.NotContains(t, logOut, "[WARN] auth failure", "401 removal path must not emit WARN spam")
+	assert.NotContains(t, logOut, "[WARN] repeated poll failures", "401 removal path must not emit WARN spam")
+}
+
+func TestRunFallbackLifecyclePoller_403TerminalAndNoWarnSpam(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	terminalCh := make(chan struct{}, 1)
+	var onTerminalCalled int
+	onTerminal := func() {
+		onTerminalCalled++
+		close(terminalCh)
+	}
+
+	var logBuf bytes.Buffer
+	log.SetOutput(&logBuf)
+	defer log.SetOutput(os.Stderr)
+
+	output := captureStdout(t, func() {
+		go RunFallbackLifecyclePoller(client, server.URL, "t1", "", onTerminal, 20*time.Millisecond)
+		select {
+		case <-terminalCh:
+			// Good
+		case <-time.After(2 * time.Second):
+			t.Fatal("onTerminal was not called within 2s")
+		}
+	})
+
+	assert.Equal(t, 1, onTerminalCalled, "onTerminal must be called exactly once for 403")
+	assert.Contains(t, output, MsgTunnelRemovedExiting, "friendly removal message must be printed for 403")
+	logOut := logBuf.String()
+	assert.NotContains(t, logOut, "[WARN] auth failure", "403 removal path must not emit WARN spam")
+	assert.NotContains(t, logOut, "[WARN] repeated poll failures", "403 removal path must not emit WARN spam")
 }
 
 func TestCheckTunnelTerminalWithStatus_ExpiredDetection(t *testing.T) {

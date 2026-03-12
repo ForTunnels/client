@@ -120,7 +120,7 @@ func handleHTTPProtocol(cfg *config.Config, runtime config.RuntimeSettings, tun 
 		case <-sigc:
 			return
 		case <-tunnelDeletedCh:
-			return
+			os.Exit(0)
 		case err := <-errCh:
 			if err != nil {
 				fmt.Printf("❌ Data-plane serve stopped: %v\n", err)
