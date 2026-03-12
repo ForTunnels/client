@@ -4,12 +4,14 @@
 package control
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -282,6 +284,11 @@ func TestHandleControlMessage(t *testing.T) {
 			shouldReturn: false,
 		},
 		{
+			name:         "tunnel updated paused",
+			msg:          map[string]interface{}{"type": "tunnel_updated", "payload": map[string]interface{}{"status": "paused"}},
+			shouldReturn: false,
+		},
+		{
 			name:         "unknown type",
 			msg:          map[string]interface{}{"type": "unknown"},
 			shouldReturn: false,
@@ -293,12 +300,103 @@ func TestHandleControlMessage(t *testing.T) {
 			ackCh := make(chan struct{}, 1)
 			intervalCh := make(chan time.Duration, 1)
 			done := make(chan struct{})
+			lastStatus := ""
 			var doneOnce sync.Once
 
-			result := handleControlMessage(tt.msg, ackCh, intervalCh, done, &doneOnce, 10*time.Second)
+			result := handleControlMessage(tt.msg, ackCh, intervalCh, done, &doneOnce, 10*time.Second, &lastStatus)
 			assert.Equal(t, tt.shouldReturn, result, "handleControlMessage() = %v, want %v")
 		})
 	}
+}
+
+func TestHandleControlMessageRepeatedTunnelUpdatedStatus(t *testing.T) {
+	msg := map[string]interface{}{"type": "tunnel_updated", "payload": map[string]interface{}{"status": statusPaused}}
+	ackCh := make(chan struct{}, 1)
+	intervalCh := make(chan time.Duration, 1)
+	done := make(chan struct{})
+	var doneOnce sync.Once
+	lastStatus := ""
+
+	output := captureStdout(t, func() {
+		result := handleControlMessage(msg, ackCh, intervalCh, done, &doneOnce, 10*time.Second, &lastStatus)
+		assert.False(t, result)
+		result = handleControlMessage(msg, ackCh, intervalCh, done, &doneOnce, 10*time.Second, &lastStatus)
+		assert.False(t, result)
+	})
+
+	select {
+	case <-done:
+		t.Fatal("done channel should not be closed for non-terminal status update")
+	default:
+	}
+	assert.Equal(t, 1, strings.Count(output, "⏸️ Tunnel status changed to paused on server\n"))
+}
+
+func TestTunnelStatusFromPayload(t *testing.T) {
+	tests := []struct {
+		name     string
+		payload  map[string]interface{}
+		expected string
+	}{
+		{
+			name:     "uses top-level status",
+			payload:  map[string]interface{}{"status": statusActive},
+			expected: statusActive,
+		},
+		{
+			name: "uses first tunnel status when top-level missing",
+			payload: map[string]interface{}{
+				"tunnels": []interface{}{map[string]interface{}{"status": statusPaused}},
+			},
+			expected: statusPaused,
+		},
+		{
+			name:     "top-level status takes precedence",
+			expected: statusActive,
+			payload: map[string]interface{}{
+				"status":  statusActive,
+				"tunnels": []interface{}{map[string]interface{}{"status": statusPaused}},
+			},
+		},
+		{
+			name:     "empty when no status",
+			payload:  map[string]interface{}{"exists": true},
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actual := tunnelStatusFromPayload(tt.payload)
+			assert.Equal(t, tt.expected, actual)
+		})
+	}
+}
+
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	origStdout := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe() failed: %v", err)
+	}
+	defer func() {
+		os.Stdout = origStdout
+	}()
+
+	os.Stdout = w
+	fn()
+
+	if err := w.Close(); err != nil {
+		t.Logf("failed to close stdout pipe writer: %v", err)
+	}
+
+	var buf bytes.Buffer
+	_, _ = io.Copy(&buf, r)
+	if err := r.Close(); err != nil {
+		t.Logf("failed to close stdout pipe reader: %v", err)
+	}
+	return buf.String()
 }
 
 func TestNotifyAckReceived(t *testing.T) {
