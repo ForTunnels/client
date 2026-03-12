@@ -60,9 +60,9 @@ func TestPrintHTTPHints(t *testing.T) {
 	_, _ = io.Copy(&buf, r)
 	out := buf.String()
 
-	// Check that new guidance is present
-	if !strings.Contains(out, "Default: stays running") {
-		t.Fatalf("expected stay-by-default hint in output, got: %s", out)
+	// Check that usage hints are present
+	if !strings.Contains(out, "Usage hints (HTTP)") {
+		t.Fatalf("expected usage hints header in output, got: %s", out)
 	}
 	if !strings.Contains(out, "/t/tid") {
 		t.Fatalf("expected path-based example with tunnel ID, got: %s", out)

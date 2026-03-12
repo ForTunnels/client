@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -88,36 +89,42 @@ func runClientWorkflow(cfg *config.Config) {
 	authToken := auth.ComputeDataPlaneAuth(tun.ID, cfg.DPAuthToken, cfg.DPAuthSecret)
 
 	ctrl.PrintTunnelInfo(tun)
-	handleHTTPProtocol(cfg, runtime, tun)
-	handleTCPListenMode(cfg, runtime, enc, tun)
-	handleTCPTestModes(cfg, runtime, enc, tun, authToken)
-	handleUDPProtocol(cfg, runtime, enc, tun, authToken)
+	handleHTTPProtocol(cfg, runtime, tun, httpClient, bearer)
+	handleTCPListenMode(cfg, runtime, enc, tun, httpClient, bearer)
+	handleTCPTestModes(cfg, runtime, enc, tun, authToken, httpClient, bearer)
+	handleUDPProtocol(cfg, runtime, enc, tun, authToken, httpClient, bearer)
 
 	if cfg.WatchWS {
 		fmt.Printf("\n🔌 Connecting to WebSocket for real-time updates...\n")
-		ctrl.ConnectWebSocket(cfg.ServerURL, tun.ID, runtime)
+		ctrl.ConnectWebSocketWithAuth(httpClient, cfg.ServerURL, tun.ID, bearer, runtime)
 	}
 }
 
 // handleHTTPProtocol delegates to tunnel package and TCP data-plane
-func handleHTTPProtocol(cfg *config.Config, runtime config.RuntimeSettings, tun *ctrl.Response) {
+func handleHTTPProtocol(cfg *config.Config, runtime config.RuntimeSettings, tun *ctrl.Response, httpClient *http.Client, bearer string) {
 	if isHTTPProtocol(cfg.Protocol) {
 		reporter := dp.NewBackendStateReporter()
 		errCh := make(chan error, 1)
+		tunnelDeletedCh := make(chan struct{})
 		go func() {
 			errCh <- dp.StartDataPlaneServeIncoming(cfg.ServerURL, tun.ID, runtime, reporter)
 		}()
+		go ctrl.RunFallbackLifecyclePoller(httpClient, cfg.ServerURL, tun.ID, bearer, func() { close(tunnelDeletedCh) }, runtime.WatchInterval)
 
 		ctrl.PrintHTTPHints(cfg.ServerURL, tun)
+		fmt.Println("💡 Tip: If you see 'Backend unreachable', start your backend on the target address.")
 		fmt.Println("\n🔌 Serving HTTP over data-plane. Press Ctrl+C to stop.")
 		sigc := make(chan os.Signal, 1)
 		signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
 		select {
 		case <-sigc:
 			return
+		case <-tunnelDeletedCh:
+			return
 		case err := <-errCh:
 			if err != nil {
 				fmt.Printf("❌ Data-plane serve stopped: %v\n", err)
+				ctrl.DeleteTunnelWithClient(cfg.ServerURL, tun.ID, httpClient, bearer)
 				os.Exit(1)
 			}
 		}
@@ -125,10 +132,11 @@ func handleHTTPProtocol(cfg *config.Config, runtime config.RuntimeSettings, tun 
 }
 
 // handleTCPListenMode delegates to TCP package
-func handleTCPListenMode(cfg *config.Config, runtime config.RuntimeSettings, enc config.EncryptionSettings, tun *ctrl.Response) {
+func handleTCPListenMode(cfg *config.Config, runtime config.RuntimeSettings, enc config.EncryptionSettings, tun *ctrl.Response, httpClient *http.Client, bearer string) {
 	if cfg.Protocol != "tcp" || cfg.Listen == "" {
 		return
 	}
+	go ctrl.RunFallbackLifecyclePoller(httpClient, cfg.ServerURL, tun.ID, bearer, func() { os.Exit(0) }, runtime.WatchInterval)
 	fmt.Printf("\n🔌 Listening on %s; forwarding over WS→smux to %s ...\n", cfg.Listen, cfg.Dst)
 	if err := dp.StartDataPlaneServeListenReconnect(
 		cfg.ServerURL,
@@ -140,15 +148,17 @@ func handleTCPListenMode(cfg *config.Config, runtime config.RuntimeSettings, enc
 		runtime,
 		enc,
 	); err != nil {
+		ctrl.DeleteTunnelWithClient(cfg.ServerURL, tun.ID, httpClient, bearer)
 		log.Fatalf("listen mode error: %v", err)
 	}
 }
 
 // handleTCPTestModes delegates to TCP and QUIC packages
-func handleTCPTestModes(cfg *config.Config, runtime config.RuntimeSettings, enc config.EncryptionSettings, tun *ctrl.Response, authToken string) {
+func handleTCPTestModes(cfg *config.Config, runtime config.RuntimeSettings, enc config.EncryptionSettings, tun *ctrl.Response, authToken string, httpClient *http.Client, bearer string) {
 	if cfg.Protocol != "tcp" {
 		return
 	}
+	cleanup := func() { ctrl.DeleteTunnelWithClient(cfg.ServerURL, tun.ID, httpClient, bearer) }
 	if cfg.DataPlane == "quic" {
 		fmt.Printf("\n🔌 Establishing QUIC data-plane for TCP test to %s...\n", cfg.Dst)
 		if err := dp.StartQUICDataPlaneTCP(
@@ -158,6 +168,7 @@ func handleTCPTestModes(cfg *config.Config, runtime config.RuntimeSettings, enc 
 			cfg.Dst,
 			cfg.Parallel,
 		); err != nil {
+			cleanup()
 			log.Fatalf("quic data-plane error: %v", err)
 		}
 		fmt.Printf("✅ TCP test (QUIC) completed\n")
@@ -167,6 +178,7 @@ func handleTCPTestModes(cfg *config.Config, runtime config.RuntimeSettings, enc 
 	if cfg.Parallel <= 1 {
 		fmt.Printf("\n🔌 Establishing data-plane (WS→smux) for TCP test to %s...\n", cfg.Dst)
 		if err := dp.StartDataPlane(cfg.ServerURL, tun.ID, cfg.Dst, runtime, enc); err != nil {
+			cleanup()
 			log.Fatalf("data-plane error: %v", err)
 		}
 		fmt.Printf("✅ TCP test completed\n")
@@ -179,13 +191,14 @@ func handleTCPTestModes(cfg *config.Config, runtime config.RuntimeSettings, enc 
 		cfg.Dst,
 	)
 	if err := dp.StartDataPlaneParallel(cfg.ServerURL, tun.ID, cfg.Dst, cfg.Parallel, runtime, enc); err != nil {
+		cleanup()
 		log.Fatalf("parallel data-plane error: %v", err)
 	}
 	fmt.Printf("✅ Parallel TCP test completed\n")
 }
 
 // handleUDPProtocol delegates to UDP, QUIC, and DTLS packages
-func handleUDPProtocol(cfg *config.Config, runtime config.RuntimeSettings, enc config.EncryptionSettings, tun *ctrl.Response, authToken string) {
+func handleUDPProtocol(cfg *config.Config, runtime config.RuntimeSettings, enc config.EncryptionSettings, tun *ctrl.Response, authToken string, httpClient *http.Client, bearer string) {
 	if cfg.Protocol != "udp" {
 		return
 	}
@@ -193,6 +206,7 @@ func handleUDPProtocol(cfg *config.Config, runtime config.RuntimeSettings, enc c
 		log.Fatalf("for UDP mode, both --udp-listen and --udp-dst are required")
 	}
 
+	go ctrl.RunFallbackLifecyclePoller(httpClient, cfg.ServerURL, tun.ID, bearer, func() { os.Exit(0) }, runtime.WatchInterval)
 	plane := strings.ToLower(cfg.DataPlane)
 
 	strategy := dp.NewStrategy(
@@ -206,7 +220,7 @@ func handleUDPProtocol(cfg *config.Config, runtime config.RuntimeSettings, enc c
 		enc,
 	)
 	fmt.Print(strategy.Description)
-	runUDPStrategy(strategy)
+	runUDPStrategy(strategy, cfg.ServerURL, tun.ID, httpClient, bearer)
 }
 
 func isHTTPProtocol(value string) bool {
@@ -221,9 +235,10 @@ func ensureHTTPHasTarget(cfg *config.Config) {
 
 // --- UDP strategy helpers ----------------------------------------------------
 
-func runUDPStrategy(strategy dp.Strategy) {
+func runUDPStrategy(strategy dp.Strategy, serverURL, tunnelID string, httpClient *http.Client, bearer string) {
 	fmt.Println(strategy.RunningMessage)
 	if err := strategy.Run(); err != nil {
+		ctrl.DeleteTunnelWithClient(serverURL, tunnelID, httpClient, bearer)
 		log.Fatalf("%s: %v", strategy.ErrLabel, err)
 	}
 }

@@ -188,7 +188,7 @@ func NewBackendStateReporter() BackendStateReporter {
 		wasDown := state[dst]
 		if err != nil {
 			if !wasDown {
-				fmt.Printf("⚠️  Backend unreachable for %s\n", dst)
+				fmt.Printf("⚠️  Backend unreachable for %s — start your backend\n", dst)
 			}
 			state[dst] = true
 		} else {

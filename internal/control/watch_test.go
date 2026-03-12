@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"strings"
 	"sync"
@@ -86,6 +87,99 @@ func TestCheckTunnelDeleted_InvalidJSON(t *testing.T) {
 	result := checkTunnelDeleted(client, server.URL, "tunnel-123")
 	if result {
 		t.Error("checkTunnelDeleted() with invalid JSON should return false")
+	}
+}
+
+func TestCheckTunnelTerminalWithStatus_BearerAuth(t *testing.T) {
+	var capturedAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"exists": true})
+	}))
+	defer server.Close()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	terminal, status := checkTunnelTerminalWithStatus(client, server.URL, "t1", "my-bearer-token")
+	assert.False(t, terminal)
+	assert.Equal(t, http.StatusOK, status)
+	assert.Equal(t, "Bearer my-bearer-token", capturedAuth)
+}
+
+func TestCheckTunnelTerminalWithStatus_CookieJarAuth(t *testing.T) {
+	jar, err := cookiejar.New(nil)
+	assert.NoError(t, err)
+	client := &http.Client{Timeout: 2 * time.Second, Jar: jar}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Cookie jar auth: no bearer, but cookies from same domain are sent
+		_ = r.Cookies()
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"exists": true})
+	}))
+	defer server.Close()
+
+	terminal, status := checkTunnelTerminalWithStatus(client, server.URL, "t1", "")
+	assert.False(t, terminal)
+	assert.Equal(t, http.StatusOK, status)
+}
+
+func TestCheckTunnelTerminalWithStatus_UnauthorizedNonTerminal(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	terminal, status := checkTunnelTerminalWithStatus(client, server.URL, "t1", "")
+	assert.False(t, terminal, "401 should not be treated as terminal (tunnel may still exist)")
+	assert.Equal(t, http.StatusUnauthorized, status)
+}
+
+func TestCheckTunnelTerminalWithStatus_ExpiredDetection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"status": StatusExpired})
+	}))
+	defer server.Close()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	terminal, status := checkTunnelTerminalWithStatus(client, server.URL, "t1", "")
+	assert.True(t, terminal)
+	assert.Equal(t, http.StatusOK, status)
+}
+
+func TestCheckTunnelTerminalWithStatus_DeletedDetection(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{"exists": false})
+	}))
+	defer server.Close()
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	terminal, status := checkTunnelTerminalWithStatus(client, server.URL, "t1", "")
+	assert.True(t, terminal)
+	assert.Equal(t, http.StatusOK, status)
+}
+
+func TestDetectAuthMode(t *testing.T) {
+	jar, _ := cookiejar.New(nil)
+	tests := []struct {
+		name   string
+		client *http.Client
+		bearer string
+		want   authMode
+	}{
+		{"bearer", &http.Client{}, "token", authModeBearer},
+		{"session-cookie", &http.Client{Jar: jar}, "", authModeSessionCookie},
+		{"unauthenticated", &http.Client{}, "", authModeUnauth},
+		{"bearer overrides jar", &http.Client{Jar: jar}, "t", authModeBearer},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := detectAuthMode(tt.client, tt.bearer)
+			assert.Equal(t, tt.want, got)
+		})
 	}
 }
 

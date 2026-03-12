@@ -11,6 +11,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -20,8 +21,43 @@ import (
 	"github.com/fortunnels/client/internal/config"
 )
 
+// logDebug logs at DEBUG level when LOG_LEVEL env contains "debug" or "DEBUG".
+func logDebug(format string, args ...any) {
+	lvl := strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL")))
+	if strings.Contains(lvl, "debug") {
+		log.Printf("[DEBUG] "+format, args...)
+	}
+}
+
+// authMode describes how the lifecycle poller authenticates to the server.
+type authMode string
+
+const (
+	authModeSessionCookie authMode = "session-cookie"
+	authModeBearer        authMode = "bearer"
+	authModeUnauth        authMode = "unauthenticated"
+)
+
+func detectAuthMode(client *http.Client, bearer string) authMode {
+	if strings.TrimSpace(bearer) != "" {
+		return authModeBearer
+	}
+	if client != nil && client.Jar != nil {
+		// Cookie jar indicates session auth was used (login-local)
+		return authModeSessionCookie
+	}
+	return authModeUnauth
+}
+
 // ConnectWebSocket connects a control-plane WebSocket and manages keepalive/watchers.
 func ConnectWebSocket(serverURL, tunnelID string, runtime config.RuntimeSettings) {
+	ConnectWebSocketWithAuth(nil, serverURL, tunnelID, "", runtime)
+}
+
+// ConnectWebSocketWithAuth connects a control-plane WebSocket with optional bearer token
+// or session-cookie client for fallback tunnel polling. httpClient may be nil; when
+// provided with a cookie jar (session auth), fallback HTTP polls use it for auth.
+func ConnectWebSocketWithAuth(httpClient *http.Client, serverURL, tunnelID, bearer string, runtime config.RuntimeSettings) {
 	wsURL := "ws" + serverURL[4:] + "/ws?watch=" + tunnelID
 
 	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
@@ -46,7 +82,7 @@ func ConnectWebSocket(serverURL, tunnelID string, runtime config.RuntimeSettings
 	intervalCh := make(chan time.Duration, 1)
 
 	warnOnMissingAck(ackCh)
-	startFallbackTunnelWatcher(serverURL, tunnelID, time.Second, intervalCh, done, &doneOnce)
+	startFallbackTunnelWatcherWithAuth(httpClient, serverURL, tunnelID, bearer, time.Second, intervalCh, done, &doneOnce)
 	startControlMessageReader(conn, ackCh, intervalCh, done, &doneOnce, runtime.WatchInterval)
 
 	runPingLoop(conn, ticker, runtime.PingTimeout, done, &doneOnce)
@@ -80,6 +116,7 @@ func warnOnMissingAck(ackCh <-chan struct{}) {
 		case <-ackCh:
 			return
 		case <-time.After(5 * time.Second):
+			logDebug("falling back from WS subscription ACK path to HTTP poll path")
 			fmt.Println("⚠️ No 'subscribed' ACK received from server; relying on fallback monitoring")
 		}
 	}()
@@ -92,17 +129,48 @@ func startFallbackTunnelWatcher(
 	done chan struct{},
 	doneOnce *sync.Once,
 ) {
+	startFallbackTunnelWatcherWithAuth(nil, serverURL, tunnelID, "", initialInterval, intervalCh, done, doneOnce)
+}
+
+// startFallbackTunnelWatcherWithAuth runs a background goroutine that polls the server
+// for tunnel terminal state. httpClient may be nil; when provided with a cookie jar
+// (session auth), it is used for authenticated requests. bearer is used when non-empty.
+func startFallbackTunnelWatcherWithAuth(
+	httpClient *http.Client,
+	serverURL, tunnelID, bearer string,
+	initialInterval time.Duration,
+	intervalCh <-chan time.Duration,
+	done chan struct{},
+	doneOnce *sync.Once,
+) {
+	client := ensurePollClient(httpClient)
+	mode := detectAuthMode(client, bearer)
+	logDebug("fallback tunnel watcher: auth mode=%s tunnelID=%s", mode, tunnelID)
+
 	go func() {
 		ticker := time.NewTicker(initialInterval)
 		defer ticker.Stop()
-		client := &http.Client{Timeout: 2 * time.Second}
+		var consecutiveFailures int
 		for {
 			select {
 			case <-ticker.C:
-				if checkTunnelDeleted(client, serverURL, tunnelID) {
-					fmt.Printf("🔴 Tunnel deleted on server\n")
+				terminal, status := checkTunnelTerminalWithStatus(client, serverURL, tunnelID, bearer)
+				if terminal {
+					fmt.Printf("🔴 Tunnel deleted or expired on server\n")
 					doneOnce.Do(func() { close(done) })
 					return
+				}
+				if status >= 400 {
+					consecutiveFailures++
+					if status == 401 || status == 403 {
+						log.Printf("[WARN] auth failure from fallback GET tunnelID=%s status=%d", tunnelID, status)
+					}
+					if consecutiveFailures >= 2 {
+						log.Printf("[WARN] repeated poll failures tunnelID=%s status=%d (attempt %d)",
+							tunnelID, status, consecutiveFailures)
+					}
+				} else {
+					consecutiveFailures = 0
 				}
 			case d := <-intervalCh:
 				if d > 0 {
@@ -115,7 +183,72 @@ func startFallbackTunnelWatcher(
 	}()
 }
 
-func checkTunnelDeleted(client *http.Client, serverURL, tunnelID string) bool {
+// StatusExpired is the wire value for expired tunnel status.
+const StatusExpired = "expired"
+
+// ensurePollClient returns a client suitable for polling. If httpClient is nil or
+// has no timeout, a default client with 2s timeout is used. Preserves cookie jar
+// when present for session auth.
+func ensurePollClient(httpClient *http.Client) *http.Client {
+	if httpClient == nil {
+		return &http.Client{Timeout: 2 * time.Second}
+	}
+	if httpClient.Timeout <= 0 {
+		c := *httpClient
+		c.Timeout = 2 * time.Second
+		return &c
+	}
+	return httpClient
+}
+
+// RunFallbackLifecyclePoller polls the server and calls onTerminal when the tunnel
+// is deleted or expired. Use for HTTP/TCP/UDP modes that lack in-band lifecycle.
+// httpClient may be nil; when provided with a cookie jar (session auth), it is used
+// for authenticated requests. bearer is used when non-empty.
+func RunFallbackLifecyclePoller(httpClient *http.Client, serverURL, tunnelID, bearer string, onTerminal func(), interval time.Duration) {
+	client := ensurePollClient(httpClient)
+	mode := detectAuthMode(client, bearer)
+	logDebug("fallback lifecycle poller: auth mode=%s tunnelID=%s", mode, tunnelID)
+
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	var consecutiveFailures int
+	for {
+		<-ticker.C
+		terminal, status := checkTunnelTerminalWithStatus(client, serverURL, tunnelID, bearer)
+		if terminal {
+			fmt.Printf("🔴 Tunnel deleted or expired on server\n")
+			onTerminal()
+			return
+		}
+		if status >= 400 {
+			consecutiveFailures++
+			if status == 401 || status == 403 {
+				log.Printf("[WARN] auth failure from fallback GET tunnelID=%s status=%d", tunnelID, status)
+			}
+			if consecutiveFailures >= 2 {
+				log.Printf("[WARN] repeated poll failures tunnelID=%s status=%d (attempt %d)",
+					tunnelID, status, consecutiveFailures)
+			}
+		} else {
+			consecutiveFailures = 0
+		}
+	}
+}
+
+// checkTunnelTerminalWithStatus returns (terminal, statusCode). statusCode is the
+// HTTP response status when non-terminal; 0 when request failed before response.
+func checkTunnelTerminalWithStatus(client *http.Client, serverURL, tunnelID, bearer string) (bool, int) {
+	terminal, status := checkTunnelTerminalWithStatusImpl(client, serverURL, tunnelID, bearer)
+	return terminal, status
+}
+
+func checkTunnelTerminal(client *http.Client, serverURL, tunnelID, bearer string) bool {
+	terminal, _ := checkTunnelTerminalWithStatusImpl(client, serverURL, tunnelID, bearer)
+	return terminal
+}
+
+func checkTunnelTerminalWithStatusImpl(client *http.Client, serverURL, tunnelID, bearer string) (bool, int) {
 	timeout := client.Timeout
 	if timeout <= 0 {
 		timeout = 5 * time.Second
@@ -124,22 +257,39 @@ func checkTunnelDeleted(client *http.Client, serverURL, tunnelID string) bool {
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "GET", serverURL+"/api/tunnels?id="+tunnelID, http.NoBody)
 	if err != nil {
-		return false
+		return false, 0
+	}
+	if strings.TrimSpace(bearer) != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return false
+		return false, 0
 	}
 	defer resp.Body.Close()
 
 	var payload map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return false
+		return false, resp.StatusCode
 	}
-	if exists, ok := payload["exists"].(bool); ok {
-		return !exists
+	if exists, ok := payload["exists"].(bool); ok && !exists {
+		return true, resp.StatusCode
 	}
-	return false
+	if status, ok := payload["status"].(string); ok && status == StatusExpired {
+		return true, resp.StatusCode
+	}
+	if tunnels, ok := payload["tunnels"].([]interface{}); ok && len(tunnels) > 0 {
+		if t, ok := tunnels[0].(map[string]interface{}); ok {
+			if s, ok := t["status"].(string); ok && s == StatusExpired {
+				return true, resp.StatusCode
+			}
+		}
+	}
+	return false, resp.StatusCode
+}
+
+func checkTunnelDeleted(client *http.Client, serverURL, tunnelID string) bool {
+	return checkTunnelTerminal(client, serverURL, tunnelID, "")
 }
 
 func startControlMessageReader(
@@ -200,6 +350,14 @@ func handleControlMessage(
 		fmt.Printf("🔴 Tunnel closed on server (reason: %s)\n", reason)
 		doneOnce.Do(func() { close(done) })
 		return true
+	case "tunnel_updated":
+		if payload := extractPayload(msg); payload != nil {
+			if status, ok := payload["status"].(string); ok && status == StatusExpired {
+				fmt.Printf("🔴 Tunnel expired on server\n")
+				doneOnce.Do(func() { close(done) })
+				return true
+			}
+		}
 	case "subscribed":
 		notifyAckReceived(ackCh)
 		updateFallbackInterval(intervalCh, defaultWatchInterval)

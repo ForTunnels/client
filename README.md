@@ -139,6 +139,11 @@ ssh -p 4000 user@localhost
 
 **Note:** When using `-encrypt`, you must provide a non-empty `-psk`.
 
+### Lifecycle and auth
+
+- When using `-login`/`-pass` (session auth), the fallback lifecycle poller uses the same authenticated client (cookie jar) for tunnel status checks. Bearer token auth is also supported.
+- `-watch` mode uses the same auth for both WebSocket subscription and HTTP fallback polling.
+
 ### Authentication notes
 
 - `-login` - login for server authentication
@@ -204,14 +209,6 @@ Test cloud webhooks against a local server:
 ```
 
 Use the public URL to configure the webhook.
-
-### Demos
-
-Show prototypes to customers:
-
-```bash
-./bin/client -local 127.0.0.1:8080 -protocol http
-```
 
 ### SSH access
 

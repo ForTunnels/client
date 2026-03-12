@@ -9,8 +9,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -100,6 +102,42 @@ func CreateTunnelWithClient(
 	}
 
 	return &tunnel, nil
+}
+
+// DeleteTunnelWithClient sends DELETE /api/tunnels?id=<id> using the given client.
+// Best-effort cleanup to avoid orphan tunnels when startup fails after creation.
+func DeleteTunnelWithClient(serverURL, tunnelID string, client *http.Client, bearer string) {
+	if tunnelID == "" {
+		return
+	}
+	hc := client
+	if hc == nil {
+		hc = &http.Client{Timeout: 5 * time.Second}
+	}
+	log.Printf("[WARN] attempting cleanup of tunnel %s", tunnelID)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	params := url.Values{}
+	params.Set("id", tunnelID)
+	req, err := http.NewRequestWithContext(ctx, "DELETE", serverURL+"/api/tunnels?"+params.Encode(), http.NoBody)
+	if err != nil {
+		log.Printf("[ERROR] cleanup failed tunnelID=%s: %v", tunnelID, err)
+		return
+	}
+	if strings.TrimSpace(bearer) != "" {
+		req.Header.Set("Authorization", "Bearer "+bearer)
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		log.Printf("[ERROR] cleanup failed tunnelID=%s: %v", tunnelID, err)
+		return
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		log.Printf("[INFO] cleanup succeeded tunnelID=%s", tunnelID)
+	} else {
+		log.Printf("[ERROR] cleanup failed tunnelID=%s status=%d", tunnelID, resp.StatusCode)
+	}
 }
 
 // printTunnelInfo displays comprehensive information about the created tunnel.
