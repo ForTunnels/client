@@ -332,6 +332,27 @@ func TestHandleControlMessageRepeatedTunnelUpdatedStatus(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(output, "⏸️ Tunnel status changed to paused on server\n"))
 }
 
+func TestHandleControlMessageSuppressesInitialActive(t *testing.T) {
+	msg := map[string]interface{}{"type": "tunnel_updated", "payload": map[string]interface{}{"status": statusActive}}
+	ackCh := make(chan struct{}, 1)
+	intervalCh := make(chan time.Duration, 1)
+	done := make(chan struct{})
+	var doneOnce sync.Once
+	lastStatus := statusActive
+
+	output := captureStdout(t, func() {
+		result := handleControlMessage(msg, ackCh, intervalCh, done, &doneOnce, 10*time.Second, &lastStatus)
+		assert.False(t, result)
+	})
+
+	select {
+	case <-done:
+		t.Fatal("done channel should not be closed for active status update")
+	default:
+	}
+	assert.Equal(t, 0, strings.Count(output, "✅ Tunnel status changed to active on server"))
+}
+
 func TestTunnelStatusFromPayload(t *testing.T) {
 	tests := []struct {
 		name     string

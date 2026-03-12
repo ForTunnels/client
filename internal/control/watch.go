@@ -151,7 +151,7 @@ func startFallbackTunnelWatcherWithAuth(
 		ticker := time.NewTicker(initialInterval)
 		defer ticker.Stop()
 		var consecutiveFailures int
-		var lastStatus string
+		lastStatus := statusActive
 		for {
 			select {
 			case <-ticker.C:
@@ -224,7 +224,7 @@ func RunFallbackLifecyclePoller(httpClient *http.Client, serverURL, tunnelID, be
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	var consecutiveFailures int
-	var lastStatus string
+	lastStatus := statusActive
 	for {
 		<-ticker.C
 		terminal, status, statusCode := checkTunnelTerminalWithStatusImpl(client, serverURL, tunnelID, bearer)
@@ -341,7 +341,7 @@ func startControlMessageReader(
 	defaultWatchInterval time.Duration,
 ) {
 	go func() {
-		var lastStatus string
+		lastStatus := statusActive
 		for {
 			var msg map[string]interface{}
 			if err := conn.ReadJSON(&msg); err != nil {
