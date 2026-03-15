@@ -39,9 +39,6 @@ type Config struct {
 	Protocol              string
 	DataPlane             string
 	UserID                string
-	Dst                   string
-	Parallel              int
-	Listen                string
 	BackoffInitial        time.Duration
 	BackoffMax            time.Duration
 	UDPListen             string
@@ -130,9 +127,6 @@ func Parse() (*Config, error) {
 	fs.StringVar(&cfg.Protocol, "protocol", cfg.Protocol, "Protocol (http, https, tcp)")
 	fs.StringVar(&cfg.DataPlane, "dp", cfg.DataPlane, "Data-plane transport (ws|quic|dtls)")
 	fs.StringVar(&cfg.UserID, "user", cfg.UserID, "User ID")
-	fs.StringVar(&cfg.Dst, "dst", cfg.Dst, "Destination for TCP test (server-side)")
-	fs.IntVar(&cfg.Parallel, "parallel", cfg.Parallel, "Number of parallel streams for TCP test")
-	fs.StringVar(&cfg.Listen, "listen", cfg.Listen, "Local TCP listen address (e.g. :4000) for client TCP mode")
 	fs.IntVar(&backoffInitialSec, "backoff-initial", backoffInitialSec, "Initial reconnect backoff seconds")
 	fs.IntVar(&backoffMaxSec, "backoff-max", backoffMaxSec, "Max reconnect backoff seconds")
 	fs.StringVar(&cfg.UDPListen, "udp-listen", cfg.UDPListen, "Local UDP listen address (e.g. :5353) for client UDP mode")
@@ -198,8 +192,6 @@ func defaultConfig() *Config {
 		Protocol:       protoHTTP,
 		DataPlane:      "ws",
 		UserID:         "default",
-		Dst:            "localhost:3333",
-		Parallel:       1,
 		BackoffInitial: time.Second,
 		BackoffMax:     30 * time.Second,
 		WatchInterval:  10 * time.Second,

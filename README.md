@@ -74,19 +74,21 @@ Host-based routing is also available, for example: `https://{subdomain}.fortunne
 ./bin/client -local 127.0.0.1:8443 -protocol https
 ```
 
-### TCP tunnel (SSH)
+### TCP tunnel (expose-local, default)
 
-Forward SSH through a tunnel:
-
-```bash
-./bin/client -protocol tcp -local 127.0.0.1:22 -dst localhost:3333 -listen :4000
-```
-
-Now you can connect to SSH through the tunnel:
+Expose a local TCP service (e.g. PostgreSQL, SSH) to a public endpoint:
 
 ```bash
-ssh -p 4000 user@localhost
+./bin/client tcp 5433
 ```
+
+Or with explicit flags:
+
+```bash
+./bin/client -protocol tcp -local 127.0.0.1:5433
+```
+
+The server allocates a public TCP port. Connect to the displayed `tcp://host:port` URL from anywhere.
 
 ### UDP tunnel (DNS)
 
@@ -110,11 +112,9 @@ ssh -p 4000 user@localhost
 
 ### TCP mode
 
-- `-dst host:port` - server-side target address for TCP forwarding/testing
-- `-parallel N` - number of parallel smux streams for TCP tests/load
-- `-listen :PORT` - local TCP listen address; incoming connections are proxied via data-plane to `-dst`
-- `-backoff-initial` - initial reconnect delay in listen mode (sec, default: 1)
-- `-backoff-max` - max reconnect delay in listen mode (sec, default: 30)
+- **Default (expose-local)**: Server accepts external TCP, forwards to your local backend.
+- `-backoff-initial` - reconnect backoff (sec, default: 1)
+- `-backoff-max` - max reconnect backoff (sec, default: 30)
 
 ### UDP mode
 

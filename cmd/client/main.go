@@ -59,6 +59,7 @@ func parseConfigOrExit() *config.Config {
 	}
 	config.Validate(cfg)
 	ensureHTTPHasTarget(cfg)
+	ensureTCPHasTarget(cfg)
 	return cfg
 }
 
@@ -90,8 +91,7 @@ func runClientWorkflow(cfg *config.Config) {
 
 	ctrl.PrintTunnelInfo(tun)
 	handleHTTPProtocol(cfg, runtime, tun, httpClient, bearer)
-	handleTCPListenMode(cfg, runtime, enc, tun, httpClient, bearer)
-	handleTCPTestModes(cfg, runtime, enc, tun, authToken, httpClient, bearer)
+	handleTCPServeIncoming(cfg, runtime, tun, httpClient, bearer)
 	handleUDPProtocol(cfg, runtime, enc, tun, authToken, httpClient, bearer)
 
 	if cfg.WatchWS {
@@ -131,70 +131,36 @@ func handleHTTPProtocol(cfg *config.Config, runtime config.RuntimeSettings, tun 
 	}
 }
 
-// handleTCPListenMode delegates to TCP package
-func handleTCPListenMode(cfg *config.Config, runtime config.RuntimeSettings, enc config.EncryptionSettings, tun *ctrl.Response, httpClient *http.Client, bearer string) {
-	if cfg.Protocol != "tcp" || cfg.Listen == "" {
-		return
-	}
-	go ctrl.RunFallbackLifecyclePoller(httpClient, cfg.ServerURL, tun.ID, bearer, func() { os.Exit(0) }, runtime.WatchInterval)
-	fmt.Printf("\n🔌 Listening on %s; forwarding over WS→smux to %s ...\n", cfg.Listen, cfg.Dst)
-	if err := dp.StartDataPlaneServeListenReconnect(
-		cfg.ServerURL,
-		tun.ID,
-		cfg.Dst,
-		cfg.Listen,
-		cfg.BackoffInitial,
-		cfg.BackoffMax,
-		runtime,
-		enc,
-	); err != nil {
-		ctrl.DeleteTunnelWithClient(cfg.ServerURL, tun.ID, httpClient, bearer)
-		log.Fatalf("listen mode error: %v", err)
-	}
-}
-
-// handleTCPTestModes delegates to TCP and QUIC packages
-func handleTCPTestModes(cfg *config.Config, runtime config.RuntimeSettings, enc config.EncryptionSettings, tun *ctrl.Response, authToken string, httpClient *http.Client, bearer string) {
+// handleTCPServeIncoming is the default TCP mode: serve incoming streams from server, dial local backend.
+func handleTCPServeIncoming(cfg *config.Config, runtime config.RuntimeSettings, tun *ctrl.Response, httpClient *http.Client, bearer string) {
 	if cfg.Protocol != "tcp" {
 		return
 	}
-	cleanup := func() { ctrl.DeleteTunnelWithClient(cfg.ServerURL, tun.ID, httpClient, bearer) }
-	if cfg.DataPlane == "quic" {
-		fmt.Printf("\n🔌 Establishing QUIC data-plane for TCP test to %s...\n", cfg.Dst)
-		if err := dp.StartQUICDataPlaneTCP(
-			cfg.ServerURL,
-			tun.ID,
-			authToken,
-			cfg.Dst,
-			cfg.Parallel,
-		); err != nil {
-			cleanup()
-			log.Fatalf("quic data-plane error: %v", err)
-		}
-		fmt.Printf("✅ TCP test (QUIC) completed\n")
+	reporter := dp.NewBackendStateReporter()
+	errCh := make(chan error, 1)
+	tunnelDeletedCh := make(chan struct{})
+	go func() {
+		errCh <- dp.StartDataPlaneServeIncoming(cfg.ServerURL, tun.ID, runtime, reporter)
+	}()
+	go ctrl.RunFallbackLifecyclePoller(httpClient, cfg.ServerURL, tun.ID, bearer, func() { close(tunnelDeletedCh) }, runtime.WatchInterval)
+	log.Printf("INFO: TCP expose-local mode active; backend target %s", cfg.TargetAddr)
+	fmt.Printf("\n🔌 Serving TCP over data-plane (expose-local). Backend: %s\n", cfg.TargetAddr)
+	fmt.Println("💡 Tip: If you see 'Backend unreachable', start your backend on the target address.")
+	fmt.Println("\n🔌 Press Ctrl+C to stop.")
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
+	select {
+	case <-sigc:
 		return
-	}
-
-	if cfg.Parallel <= 1 {
-		fmt.Printf("\n🔌 Establishing data-plane (WS→smux) for TCP test to %s...\n", cfg.Dst)
-		if err := dp.StartDataPlane(cfg.ServerURL, tun.ID, cfg.Dst, runtime, enc); err != nil {
-			cleanup()
-			log.Fatalf("data-plane error: %v", err)
+	case <-tunnelDeletedCh:
+		os.Exit(0)
+	case err := <-errCh:
+		if err != nil {
+			fmt.Printf("❌ Data-plane serve stopped: %v\n", err)
+			ctrl.DeleteTunnelWithClient(cfg.ServerURL, tun.ID, httpClient, bearer)
+			os.Exit(1)
 		}
-		fmt.Printf("✅ TCP test completed\n")
-		return
 	}
-
-	fmt.Printf(
-		"\n🔌 Establishing data-plane (WS→smux) with %d parallel streams to %s...\n",
-		cfg.Parallel,
-		cfg.Dst,
-	)
-	if err := dp.StartDataPlaneParallel(cfg.ServerURL, tun.ID, cfg.Dst, cfg.Parallel, runtime, enc); err != nil {
-		cleanup()
-		log.Fatalf("parallel data-plane error: %v", err)
-	}
-	fmt.Printf("✅ Parallel TCP test completed\n")
 }
 
 // handleUDPProtocol delegates to UDP, QUIC, and DTLS packages
@@ -230,6 +196,15 @@ func isHTTPProtocol(value string) bool {
 func ensureHTTPHasTarget(cfg *config.Config) {
 	if isHTTPProtocol(cfg.Protocol) && cfg.TargetAddr == "" {
 		log.Fatal("Target address is required (e.g. 127.0.0.1:8000)")
+	}
+}
+
+func ensureTCPHasTarget(cfg *config.Config) {
+	if cfg.Protocol != "tcp" {
+		return
+	}
+	if cfg.TargetAddr == "" {
+		log.Fatal("Target address is required for TCP expose-local mode (e.g. 127.0.0.1:5433)")
 	}
 }
 

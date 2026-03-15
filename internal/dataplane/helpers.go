@@ -12,12 +12,9 @@ import (
 
 const (
 	wsReadTimeout       = 90 * time.Second
-	tcpEchoTimeout      = 5 * time.Second
-	quicEchoTimeout     = 3 * time.Second
 	reconnectRetryDelay = 200 * time.Millisecond
 	udpMaxPacketSize    = 65535
 	udpDatagramMaxSize  = 65507
-	tcpEchoBufferSize   = 1024
 	schemeHTTP          = "http"
 	schemeHTTPS         = "https"
 )

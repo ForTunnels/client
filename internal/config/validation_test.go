@@ -88,6 +88,13 @@ func TestIsLocalServerHost(t *testing.T) {
 	}
 }
 
+func TestValidateTargetAddressIfNeeded_TCPUsesTargetAddr(t *testing.T) {
+	// TCP expose-local: TargetAddr is validated
+	cfg := &Config{Protocol: protoTCP, TargetAddr: "127.0.0.1:5433"}
+	// Should not panic; TargetAddr is valid
+	validateTargetAddressIfNeeded(cfg)
+}
+
 func TestValidateLoginRequiresPassword(t *testing.T) {
 	tests := []struct {
 		name     string

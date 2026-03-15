@@ -107,6 +107,15 @@ func TestDefaultConfig(t *testing.T) {
 	if cfg.PSK != "" {
 		t.Errorf("defaultConfig() PSK should be empty, got %q", cfg.PSK)
 	}
+	// TCP default mode: expose-local (serve-incoming)
+}
+
+func TestProcessPositionalArgs_TCPPort(t *testing.T) {
+	protocol := "http"
+	targetAddr := ""
+	processPositionalArgs([]string{"tcp", "5433"}, &protocol, &targetAddr, false, false)
+	assert.Equal(t, protoTCP, protocol, "tcp 5433 should set protocol to tcp")
+	assert.Equal(t, "127.0.0.1:5433", targetAddr, "tcp 5433 should set target_addr to 127.0.0.1:5433")
 }
 
 func TestApplySecretSourcesFromEnv(t *testing.T) {

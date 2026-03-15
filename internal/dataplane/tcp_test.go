@@ -125,9 +125,9 @@ func TestServeIncomingStream_EmptyDestination(t *testing.T) {
 	stream := &mockTCPReadWriteCloser{
 		readData: []byte(preface),
 	}
-	_ = serveIncomingStream(stream, nil)
-	// serveIncomingStream returns err if dst == "" (from readStreamDestination).
-	// If it returns nil, it tried to dial empty address (which fails with mocks).
+	err := serveIncomingStream(stream, nil)
+	require.Error(t, err, "serveIncomingStream() with empty dst should return explicit error")
+	require.Contains(t, err.Error(), "dst", "error message should mention dst")
 }
 
 func TestServeIncomingStream_DialError(t *testing.T) {

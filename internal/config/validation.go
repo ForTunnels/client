@@ -19,13 +19,11 @@ func Validate(cfg *Config) {
 	validateProtocolFlag(cfg.Protocol)
 	validateServerURLFlag(cfg.ServerURL, cfg.ServerFlagProvided, cfg.AllowInsecureHTTP)
 	validateTargetAddressIfNeeded(cfg)
-	validateParallelAndBackoff(cfg)
 	enforceEncryptionRequirements(cfg)
 	if err := validateLoginPasswordPair(cfg); err != nil {
 		fmt.Println("❌", err.Error())
 		os.Exit(2)
 	}
-	validateTCPListenAddress(cfg)
 	warnOnSensitiveFlagUsage(cfg)
 }
 
@@ -103,19 +101,6 @@ func validateTargetAddress(addr string) {
 	}
 }
 
-func validateParallelAndBackoff(cfg *Config) {
-	if cfg.Protocol == protoTCP && cfg.Parallel <= 0 {
-		fmt.Println("❌ invalid parallel count")
-		fmt.Println("   Use --parallel 1 or more")
-		os.Exit(2)
-	}
-	if cfg.BackoffInitial <= 0 || cfg.BackoffMax <= 0 || cfg.BackoffMax < cfg.BackoffInitial {
-		fmt.Println("❌ invalid backoff values")
-		fmt.Println("   Ensure --backoff-initial > 0 and --backoff-max >= --backoff-initial")
-		os.Exit(2)
-	}
-}
-
 func enforceEncryptionRequirements(cfg *Config) {
 	if !cfg.Encrypt {
 		return
@@ -129,17 +114,6 @@ func enforceEncryptionRequirements(cfg *Config) {
 	if len(psk) < 32 {
 		fmt.Println("❌ PSK is too short")
 		fmt.Println("   Use at least 32 characters for --psk")
-		os.Exit(2)
-	}
-}
-
-func validateTCPListenAddress(cfg *Config) {
-	if cfg.Protocol != protoTCP || cfg.Listen == "" {
-		return
-	}
-	if _, err := net.ResolveTCPAddr("tcp", cfg.Listen); err != nil {
-		fmt.Println("❌ invalid listen address")
-		fmt.Println("   Example: --listen :4000 or --listen 127.0.0.1:4000")
 		os.Exit(2)
 	}
 }
