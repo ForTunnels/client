@@ -75,7 +75,9 @@ const setupAckLine = `{"ok":true}` + "\n"
 func writeSetupError(stream io.Writer, err error) {
 	payload := map[string]interface{}{"ok": false, "error": err.Error()}
 	if b, e := json.Marshal(payload); e == nil {
-		_, _ = stream.Write(append(b, '\n'))
+		if _, wErr := stream.Write(append(b, '\n')); wErr != nil {
+			log.Printf("writeSetupError: %v", wErr)
+		}
 	}
 }
 
@@ -148,14 +150,18 @@ func bridgeStreamAndBackend(stream io.ReadWriteCloser, streamReader io.Reader, b
 func closeWriteIfPossible(c interface{}) {
 	type closeWriter interface{ CloseWrite() error }
 	if cw, ok := c.(closeWriter); ok {
-		_ = cw.CloseWrite()
+		if err := cw.CloseWrite(); err != nil {
+			log.Printf("closeWriteIfPossible: %v", err)
+		}
 	}
 }
 
 func closeWriteOrClose(stream io.ReadWriteCloser) {
 	type closeWriter interface{ CloseWrite() error }
 	if cw, ok := stream.(closeWriter); ok {
-		_ = cw.CloseWrite()
+		if err := cw.CloseWrite(); err != nil {
+			log.Printf("closeWriteOrClose: %v", err)
+		}
 		return
 	}
 	_ = stream.Close()

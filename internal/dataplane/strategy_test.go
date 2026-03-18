@@ -7,8 +7,9 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/fortunnels/client/internal/config"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/fortunnels/client/internal/config"
 )
 
 func TestNewStrategy(t *testing.T) {

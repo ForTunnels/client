@@ -122,16 +122,6 @@ func warnOnMissingAck(ackCh <-chan struct{}) {
 	}()
 }
 
-func startFallbackTunnelWatcher(
-	serverURL, tunnelID string,
-	initialInterval time.Duration,
-	intervalCh <-chan time.Duration,
-	done chan struct{},
-	doneOnce *sync.Once,
-) {
-	startFallbackTunnelWatcherWithAuth(nil, serverURL, tunnelID, "", initialInterval, intervalCh, done, doneOnce)
-}
-
 // startFallbackTunnelWatcherWithAuth runs a background goroutine that polls the server
 // for tunnel terminal state. httpClient may be nil; when provided with a cookie jar
 // (session auth), it is used for authenticated requests. bearer is used when non-empty.
@@ -261,8 +251,10 @@ func RunFallbackLifecyclePoller(httpClient *http.Client, serverURL, tunnelID, be
 
 // checkTunnelTerminalWithStatus returns (terminal, statusCode). statusCode is the
 // HTTP response status when non-terminal; 0 when request failed before response.
-func checkTunnelTerminalWithStatus(client *http.Client, serverURL, tunnelID, bearer string) (bool, int) {
-	terminal, _, statusCode := checkTunnelTerminalWithStatusImpl(client, serverURL, tunnelID, bearer)
+//
+//nolint:unparam // tunnelID is required for API; unparam flags test-only call sites
+func checkTunnelTerminalWithStatus(client *http.Client, serverURL, tunnelID, bearer string) (terminal bool, statusCode int) {
+	terminal, _, statusCode = checkTunnelTerminalWithStatusImpl(client, serverURL, tunnelID, bearer)
 	return terminal, statusCode
 }
 
@@ -271,7 +263,7 @@ func checkTunnelTerminal(client *http.Client, serverURL, tunnelID, bearer string
 	return terminal
 }
 
-func checkTunnelTerminalWithStatusImpl(client *http.Client, serverURL, tunnelID, bearer string) (bool, string, int) {
+func checkTunnelTerminalWithStatusImpl(client *http.Client, serverURL, tunnelID, bearer string) (terminal bool, status string, statusCode int) {
 	timeout := client.Timeout
 	if timeout <= 0 {
 		timeout = 5 * time.Second
@@ -302,7 +294,7 @@ func checkTunnelTerminalWithStatusImpl(client *http.Client, serverURL, tunnelID,
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return false, "", resp.StatusCode
 	}
-	status := tunnelStatusFromPayload(payload)
+	status = tunnelStatusFromPayload(payload)
 
 	if exists, ok := payload["exists"].(bool); ok && !exists {
 		return true, status, resp.StatusCode

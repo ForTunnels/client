@@ -44,33 +44,44 @@ func main() {
 		os.Exit(0)
 	}
 
-	cfg := parseConfigOrExit()
-	runClientWorkflow(cfg)
-}
-
-func parseConfigOrExit() *config.Config {
-	config.SetDefaultServerURL(defaultServerURL)
-	cfg, err := config.Parse()
+	cfg, err := parseConfig()
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			os.Exit(0)
 		}
-		log.Fatal(err)
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
 	}
-	config.Validate(cfg)
-	ensureHTTPHasTarget(cfg)
-	ensureTCPHasTarget(cfg)
-	return cfg
+
+	if err := runClientWorkflow(cfg); err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		os.Exit(1)
+	}
 }
 
-func runClientWorkflow(cfg *config.Config) {
+func parseConfig() (*config.Config, error) {
+	config.SetDefaultServerURL(defaultServerURL)
+	cfg, err := config.Parse()
+	if err != nil {
+		return nil, err
+	}
+	config.Validate(cfg)
+	if err := ensureHTTPHasTarget(cfg); err != nil {
+		return nil, err
+	}
+	if err := ensureTCPHasTarget(cfg); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
+func runClientWorkflow(cfg *config.Config) error {
 	fmt.Printf("Creating tunnel for %s://%s\n", cfg.Protocol, cfg.TargetAddr)
 	fmt.Printf("Connecting to server: %s\n", cfg.ServerURL)
 
 	httpClient, bearer, err := auth.SetupAuthentication(cfg)
 	if err != nil {
-		fmt.Printf("❌ Authentication failed: %v\n", err)
-		os.Exit(1)
+		return fmt.Errorf("❌ Authentication failed: %w", err)
 	}
 
 	tun, err := ctrl.CreateTunnelWithClient(
@@ -82,7 +93,7 @@ func runClientWorkflow(cfg *config.Config) {
 		bearer,
 	)
 	if err != nil {
-		clierrors.HandleTunnelCreationError(err, cfg.ServerURL)
+		return clierrors.HandleTunnelCreationError(err, cfg.ServerURL)
 	}
 
 	runtime := cfg.RuntimeSettings()
@@ -90,51 +101,59 @@ func runClientWorkflow(cfg *config.Config) {
 	authToken := auth.ComputeDataPlaneAuth(tun.ID, cfg.DPAuthToken, cfg.DPAuthSecret)
 
 	ctrl.PrintTunnelInfo(tun)
-	handleHTTPProtocol(cfg, runtime, tun, httpClient, bearer)
-	handleTCPServeIncoming(cfg, runtime, tun, httpClient, bearer)
-	handleUDPProtocol(cfg, runtime, enc, tun, authToken, httpClient, bearer)
+	if err := handleHTTPProtocol(cfg, runtime, tun, httpClient, bearer); err != nil {
+		return err
+	}
+	if err := handleTCPServeIncoming(cfg, runtime, tun, httpClient, bearer); err != nil {
+		return err
+	}
+	if err := handleUDPProtocol(cfg, runtime, enc, tun, authToken, httpClient, bearer); err != nil {
+		return err
+	}
 
 	if cfg.WatchWS {
 		fmt.Printf("\n🔌 Connecting to WebSocket for real-time updates...\n")
 		ctrl.ConnectWebSocketWithAuth(httpClient, cfg.ServerURL, tun.ID, bearer, runtime)
 	}
+	return nil
 }
 
 // handleHTTPProtocol delegates to tunnel package and TCP data-plane
-func handleHTTPProtocol(cfg *config.Config, runtime config.RuntimeSettings, tun *ctrl.Response, httpClient *http.Client, bearer string) {
-	if isHTTPProtocol(cfg.Protocol) {
-		reporter := dp.NewBackendStateReporter()
-		errCh := make(chan error, 1)
-		tunnelDeletedCh := make(chan struct{})
-		go func() {
-			errCh <- dp.StartDataPlaneServeIncoming(cfg.ServerURL, tun.ID, runtime, reporter)
-		}()
-		go ctrl.RunFallbackLifecyclePoller(httpClient, cfg.ServerURL, tun.ID, bearer, func() { close(tunnelDeletedCh) }, runtime.WatchInterval)
+func handleHTTPProtocol(cfg *config.Config, runtime config.RuntimeSettings, tun *ctrl.Response, httpClient *http.Client, bearer string) error {
+	if !isHTTPProtocol(cfg.Protocol) {
+		return nil
+	}
+	reporter := dp.NewBackendStateReporter()
+	errCh := make(chan error, 1)
+	tunnelDeletedCh := make(chan struct{})
+	go func() {
+		errCh <- dp.StartDataPlaneServeIncoming(cfg.ServerURL, tun.ID, runtime, reporter)
+	}()
+	go ctrl.RunFallbackLifecyclePoller(httpClient, cfg.ServerURL, tun.ID, bearer, func() { close(tunnelDeletedCh) }, runtime.WatchInterval)
 
-		ctrl.PrintHTTPHints(cfg.ServerURL, tun)
-		fmt.Println("💡 Tip: If you see 'Backend unreachable', start your backend on the target address.")
-		fmt.Println("\n🔌 Serving HTTP over data-plane. Press Ctrl+C to stop.")
-		sigc := make(chan os.Signal, 1)
-		signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
-		select {
-		case <-sigc:
-			return
-		case <-tunnelDeletedCh:
-			os.Exit(0)
-		case err := <-errCh:
-			if err != nil {
-				fmt.Printf("❌ Data-plane serve stopped: %v\n", err)
-				ctrl.DeleteTunnelWithClient(cfg.ServerURL, tun.ID, httpClient, bearer)
-				os.Exit(1)
-			}
+	ctrl.PrintHTTPHints(cfg.ServerURL, tun)
+	fmt.Println("💡 Tip: If you see 'Backend unreachable', start your backend on the target address.")
+	fmt.Println("\n🔌 Serving HTTP over data-plane. Press Ctrl+C to stop.")
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
+	select {
+	case <-sigc:
+		return nil
+	case <-tunnelDeletedCh:
+		return nil
+	case err := <-errCh:
+		if err != nil {
+			ctrl.DeleteTunnelWithClient(cfg.ServerURL, tun.ID, httpClient, bearer)
+			return fmt.Errorf("❌ Data-plane serve stopped: %w", err)
 		}
+		return nil
 	}
 }
 
 // handleTCPServeIncoming is the default TCP mode: serve incoming streams from server, dial local backend.
-func handleTCPServeIncoming(cfg *config.Config, runtime config.RuntimeSettings, tun *ctrl.Response, httpClient *http.Client, bearer string) {
+func handleTCPServeIncoming(cfg *config.Config, runtime config.RuntimeSettings, tun *ctrl.Response, httpClient *http.Client, bearer string) error {
 	if cfg.Protocol != "tcp" {
-		return
+		return nil
 	}
 	reporter := dp.NewBackendStateReporter()
 	errCh := make(chan error, 1)
@@ -151,28 +170,30 @@ func handleTCPServeIncoming(cfg *config.Config, runtime config.RuntimeSettings, 
 	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
 	select {
 	case <-sigc:
-		return
+		return nil
 	case <-tunnelDeletedCh:
-		os.Exit(0)
+		return nil
 	case err := <-errCh:
 		if err != nil {
-			fmt.Printf("❌ Data-plane serve stopped: %v\n", err)
 			ctrl.DeleteTunnelWithClient(cfg.ServerURL, tun.ID, httpClient, bearer)
-			os.Exit(1)
+			return fmt.Errorf("❌ Data-plane serve stopped: %w", err)
 		}
+		return nil
 	}
 }
 
 // handleUDPProtocol delegates to UDP, QUIC, and DTLS packages
-func handleUDPProtocol(cfg *config.Config, runtime config.RuntimeSettings, enc config.EncryptionSettings, tun *ctrl.Response, authToken string, httpClient *http.Client, bearer string) {
+func handleUDPProtocol(cfg *config.Config, runtime config.RuntimeSettings, enc config.EncryptionSettings, tun *ctrl.Response, authToken string, httpClient *http.Client, bearer string) error {
 	if cfg.Protocol != "udp" {
-		return
+		return nil
 	}
 	if cfg.UDPListen == "" || cfg.UDPDst == "" {
-		log.Fatalf("for UDP mode, both --udp-listen and --udp-dst are required")
+		return fmt.Errorf("for UDP mode, both --udp-listen and --udp-dst are required")
 	}
 
-	go ctrl.RunFallbackLifecyclePoller(httpClient, cfg.ServerURL, tun.ID, bearer, func() { os.Exit(0) }, runtime.WatchInterval)
+	errCh := make(chan error, 1)
+	tunnelDeletedCh := make(chan struct{})
+	go ctrl.RunFallbackLifecyclePoller(httpClient, cfg.ServerURL, tun.ID, bearer, func() { close(tunnelDeletedCh) }, runtime.WatchInterval)
 	plane := strings.ToLower(cfg.DataPlane)
 
 	strategy := dp.NewStrategy(
@@ -186,34 +207,50 @@ func handleUDPProtocol(cfg *config.Config, runtime config.RuntimeSettings, enc c
 		enc,
 	)
 	fmt.Print(strategy.Description)
-	runUDPStrategy(strategy, cfg.ServerURL, tun.ID, httpClient, bearer)
+	fmt.Println("\n🔌 Press Ctrl+C to stop.")
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		errCh <- runUDPStrategy(strategy, cfg.ServerURL, tun.ID, httpClient, bearer)
+	}()
+	select {
+	case <-sigc:
+		return nil
+	case <-tunnelDeletedCh:
+		return nil
+	case err := <-errCh:
+		return err
+	}
 }
 
 func isHTTPProtocol(value string) bool {
 	return value == protoHTTP || value == protoHTTPS
 }
 
-func ensureHTTPHasTarget(cfg *config.Config) {
+func ensureHTTPHasTarget(cfg *config.Config) error {
 	if isHTTPProtocol(cfg.Protocol) && cfg.TargetAddr == "" {
-		log.Fatal("Target address is required (e.g. 127.0.0.1:8000)")
+		return fmt.Errorf("target address is required (e.g. 127.0.0.1:8000)")
 	}
+	return nil
 }
 
-func ensureTCPHasTarget(cfg *config.Config) {
+func ensureTCPHasTarget(cfg *config.Config) error {
 	if cfg.Protocol != "tcp" {
-		return
+		return nil
 	}
 	if cfg.TargetAddr == "" {
-		log.Fatal("Target address is required for TCP expose-local mode (e.g. 127.0.0.1:5433)")
+		return fmt.Errorf("target address is required for TCP expose-local mode (e.g. 127.0.0.1:5433)")
 	}
+	return nil
 }
 
 // --- UDP strategy helpers ----------------------------------------------------
 
-func runUDPStrategy(strategy dp.Strategy, serverURL, tunnelID string, httpClient *http.Client, bearer string) {
+func runUDPStrategy(strategy dp.Strategy, serverURL, tunnelID string, httpClient *http.Client, bearer string) error {
 	fmt.Println(strategy.RunningMessage)
 	if err := strategy.Run(); err != nil {
 		ctrl.DeleteTunnelWithClient(serverURL, tunnelID, httpClient, bearer)
-		log.Fatalf("%s: %v", strategy.ErrLabel, err)
+		return fmt.Errorf("%s: %w", strategy.ErrLabel, err)
 	}
+	return nil
 }

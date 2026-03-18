@@ -18,9 +18,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fortunnels/client/internal/config"
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
+
+	"github.com/fortunnels/client/internal/config"
 )
 
 func TestCheckTunnelDeleted(t *testing.T) {

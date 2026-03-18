@@ -10,9 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+
 	"github.com/fortunnels/client/internal/config"
 	sec "github.com/fortunnels/client/internal/security"
-	"github.com/stretchr/testify/assert"
 )
 
 // mockCloser implements io.Closer for testing

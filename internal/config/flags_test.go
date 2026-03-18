@@ -7,9 +7,10 @@ import (
 	"os"
 	"testing"
 
-	"github.com/fortunnels/client/internal/support"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fortunnels/client/internal/support"
 )
 
 func TestParsePort(t *testing.T) {

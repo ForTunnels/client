@@ -48,6 +48,11 @@ func TestIsConnRefused(t *testing.T) {
 			err:      &net.OpError{Err: errors.New("network unreachable")},
 			expected: false,
 		},
+		{
+			name:     "nil error",
+			err:      nil,
+			expected: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -89,6 +94,11 @@ func TestIsDialTimeout(t *testing.T) {
 		{
 			name:     "net.Error without Timeout",
 			err:      &nonTimeoutError{},
+			expected: false,
+		},
+		{
+			name:     "nil error",
+			err:      nil,
 			expected: false,
 		},
 	}

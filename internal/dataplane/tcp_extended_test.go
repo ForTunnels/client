@@ -13,9 +13,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fortunnels/client/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fortunnels/client/internal/config"
 )
 
 func TestStartUDPLocalToStream_WithMocks(t *testing.T) {

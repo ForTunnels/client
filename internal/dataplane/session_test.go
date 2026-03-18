@@ -10,9 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fortunnels/client/internal/config"
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fortunnels/client/internal/config"
 )
 
 func TestNextBackoff(t *testing.T) {
