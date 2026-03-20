@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: PROPRIETARY
 // Copyright (c) 2026 ForTunnels
 
+//go:build integration
+
 package wsconn
 
 import (

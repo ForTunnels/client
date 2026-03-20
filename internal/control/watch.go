@@ -7,7 +7,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -16,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	protocolv1 "github.com/fortunnels/client/shared/protocol/v1"
 	"github.com/gorilla/websocket"
 
 	"github.com/fortunnels/client/internal/config"
@@ -38,6 +38,17 @@ const (
 	authModeUnauth        authMode = "unauthenticated"
 )
 
+type Watcher struct {
+	out Output
+}
+
+func NewWatcher(out Output) *Watcher {
+	if out == nil {
+		out = StdOutput{}
+	}
+	return &Watcher{out: out}
+}
+
 func detectAuthMode(client *http.Client, bearer string) authMode {
 	if strings.TrimSpace(bearer) != "" {
 		return authModeBearer
@@ -51,13 +62,20 @@ func detectAuthMode(client *http.Client, bearer string) authMode {
 
 // ConnectWebSocket connects a control-plane WebSocket and manages keepalive/watchers.
 func ConnectWebSocket(serverURL, tunnelID string, runtime config.RuntimeSettings) {
-	ConnectWebSocketWithAuth(nil, serverURL, tunnelID, "", runtime)
+	NewWatcher(nil).ConnectWebSocketWithAuth(nil, serverURL, tunnelID, "", runtime)
 }
 
 // ConnectWebSocketWithAuth connects a control-plane WebSocket with optional bearer token
 // or session-cookie client for fallback tunnel polling. httpClient may be nil; when
 // provided with a cookie jar (session auth), fallback HTTP polls use it for auth.
 func ConnectWebSocketWithAuth(httpClient *http.Client, serverURL, tunnelID, bearer string, runtime config.RuntimeSettings) {
+	NewWatcher(nil).ConnectWebSocketWithAuth(httpClient, serverURL, tunnelID, bearer, runtime)
+}
+
+// ConnectWebSocketWithAuth connects a control-plane WebSocket with optional bearer token
+// or session-cookie client for fallback tunnel polling. httpClient may be nil; when
+// provided with a cookie jar (session auth), fallback HTTP polls use it for auth.
+func (w *Watcher) ConnectWebSocketWithAuth(httpClient *http.Client, serverURL, tunnelID, bearer string, runtime config.RuntimeSettings) {
 	wsURL := "ws" + serverURL[4:] + "/ws?watch=" + tunnelID
 
 	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
@@ -70,7 +88,7 @@ func ConnectWebSocketWithAuth(httpClient *http.Client, serverURL, tunnelID, bear
 	}
 	defer conn.Close()
 
-	fmt.Printf("✅ WebSocket connected\n")
+	w.out.Printf("✅ WebSocket connected\n")
 
 	ticker := time.NewTicker(runtime.PingInterval)
 	defer ticker.Stop()
@@ -81,9 +99,9 @@ func ConnectWebSocketWithAuth(httpClient *http.Client, serverURL, tunnelID, bear
 	ackCh := make(chan struct{}, 1)
 	intervalCh := make(chan time.Duration, 1)
 
-	warnOnMissingAck(ackCh)
-	startFallbackTunnelWatcherWithAuth(httpClient, serverURL, tunnelID, bearer, time.Second, intervalCh, done, &doneOnce)
-	startControlMessageReader(conn, ackCh, intervalCh, done, &doneOnce, runtime.WatchInterval)
+	w.warnOnMissingAck(ackCh)
+	w.startFallbackTunnelWatcherWithAuth(httpClient, serverURL, tunnelID, bearer, time.Second, intervalCh, done, &doneOnce)
+	w.startControlMessageReader(conn, ackCh, intervalCh, done, &doneOnce, runtime.WatchInterval)
 
 	runPingLoop(conn, ticker, runtime.PingTimeout, done, &doneOnce)
 }
@@ -110,14 +128,14 @@ func runPingLoop(
 	}
 }
 
-func warnOnMissingAck(ackCh <-chan struct{}) {
+func (w *Watcher) warnOnMissingAck(ackCh <-chan struct{}) {
 	go func() {
 		select {
 		case <-ackCh:
 			return
 		case <-time.After(5 * time.Second):
 			logDebug("falling back from WS subscription ACK path to HTTP poll path")
-			fmt.Println("⚠️ No 'subscribed' ACK received from server; relying on fallback monitoring")
+			w.out.Println("⚠️ No 'subscribed' ACK received from server; relying on fallback monitoring")
 		}
 	}()
 }
@@ -125,7 +143,7 @@ func warnOnMissingAck(ackCh <-chan struct{}) {
 // startFallbackTunnelWatcherWithAuth runs a background goroutine that polls the server
 // for tunnel terminal state. httpClient may be nil; when provided with a cookie jar
 // (session auth), it is used for authenticated requests. bearer is used when non-empty.
-func startFallbackTunnelWatcherWithAuth(
+func (w *Watcher) startFallbackTunnelWatcherWithAuth(
 	httpClient *http.Client,
 	serverURL, tunnelID, bearer string,
 	initialInterval time.Duration,
@@ -147,12 +165,12 @@ func startFallbackTunnelWatcherWithAuth(
 			case <-ticker.C:
 				terminal, status, statusCode := checkTunnelTerminalWithStatusImpl(client, serverURL, tunnelID, bearer)
 				if terminal {
-					fmt.Println(MsgTunnelRemovedExiting)
+					w.out.Println(MsgTunnelRemovedExiting)
 					doneOnce.Do(func() { close(done) })
 					return
 				}
 				if status != "" && status != lastStatus {
-					printTunnelStatusChange(status)
+					w.printTunnelStatusChange(status)
 					lastStatus = status
 				}
 				if statusCode >= 400 {
@@ -179,7 +197,7 @@ func startFallbackTunnelWatcherWithAuth(
 }
 
 // StatusExpired is the wire value for expired tunnel status.
-const StatusExpired = "expired"
+const StatusExpired = protocolv1.StatusExpired
 
 // Lifecycle contract: HTTP 401 from GET /api/tunnels?id=<id> means the tunnel
 // was removed for this client session/token (e.g. revoked access, session expired).
@@ -189,9 +207,9 @@ const StatusExpired = "expired"
 const MsgTunnelRemovedExiting = "Tunnel was removed. Exiting."
 
 const (
-	statusActive    = "active"
-	statusNotActive = "not active"
-	statusPaused    = "paused"
+	statusActive    = protocolv1.StatusActive
+	statusNotActive = protocolv1.StatusNotActive
+	statusPaused    = protocolv1.StatusPaused
 )
 
 // ensurePollClient returns a client suitable for polling. If httpClient is nil or
@@ -214,6 +232,10 @@ func ensurePollClient(httpClient *http.Client) *http.Client {
 // httpClient may be nil; when provided with a cookie jar (session auth), it is used
 // for authenticated requests. bearer is used when non-empty.
 func RunFallbackLifecyclePoller(httpClient *http.Client, serverURL, tunnelID, bearer string, onTerminal func(), interval time.Duration) {
+	NewWatcher(nil).RunFallbackLifecyclePoller(httpClient, serverURL, tunnelID, bearer, onTerminal, interval)
+}
+
+func (w *Watcher) RunFallbackLifecyclePoller(httpClient *http.Client, serverURL, tunnelID, bearer string, onTerminal func(), interval time.Duration) {
 	client := ensurePollClient(httpClient)
 	mode := detectAuthMode(client, bearer)
 	logDebug("fallback lifecycle poller: auth mode=%s tunnelID=%s", mode, tunnelID)
@@ -226,12 +248,12 @@ func RunFallbackLifecyclePoller(httpClient *http.Client, serverURL, tunnelID, be
 		<-ticker.C
 		terminal, status, statusCode := checkTunnelTerminalWithStatusImpl(client, serverURL, tunnelID, bearer)
 		if terminal {
-			fmt.Println(MsgTunnelRemovedExiting)
+			w.out.Println(MsgTunnelRemovedExiting)
 			onTerminal()
 			return
 		}
 		if status != "" && status != lastStatus {
-			printTunnelStatusChange(status)
+			w.printTunnelStatusChange(status)
 			lastStatus = status
 		}
 		if statusCode >= 400 {
@@ -290,13 +312,13 @@ func checkTunnelTerminalWithStatusImpl(client *http.Client, serverURL, tunnelID,
 		return true, "", resp.StatusCode
 	}
 
-	var payload map[string]any
+	var payload protocolv1.TunnelListResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
 		return false, "", resp.StatusCode
 	}
 	status = tunnelStatusFromPayload(payload)
 
-	if exists, ok := payload["exists"].(bool); ok && !exists {
+	if !payload.Exists {
 		return true, status, resp.StatusCode
 	}
 	if status == StatusExpired {
@@ -305,32 +327,42 @@ func checkTunnelTerminalWithStatusImpl(client *http.Client, serverURL, tunnelID,
 	return false, status, resp.StatusCode
 }
 
-func tunnelStatusFromPayload(payload map[string]any) string {
-	if status, ok := payload["status"].(string); ok && status != "" {
-		return status
-	}
-	if tunnels, ok := payload["tunnels"].([]interface{}); ok && len(tunnels) > 0 {
-		if t, ok := tunnels[0].(map[string]interface{}); ok {
-			if status, ok := t["status"].(string); ok && status != "" {
-				return status
+func tunnelStatusFromPayload(payload any) string {
+	switch v := payload.(type) {
+	case protocolv1.TunnelListResponse:
+		if v.Status != "" {
+			return v.Status
+		}
+		if len(v.Tunnels) > 0 && v.Tunnels[0].Status != "" {
+			return v.Tunnels[0].Status
+		}
+	case map[string]interface{}:
+		if status, ok := v["status"].(string); ok && status != "" {
+			return status
+		}
+		if tunnels, ok := v["tunnels"].([]interface{}); ok && len(tunnels) > 0 {
+			if tunnel, ok := tunnels[0].(map[string]interface{}); ok {
+				if status, ok := tunnel["status"].(string); ok {
+					return status
+				}
 			}
 		}
 	}
 	return ""
 }
 
-func printTunnelStatusChange(status string) {
+func (w *Watcher) printTunnelStatusChange(status string) {
 	switch status {
 	case StatusExpired:
 		return
 	case statusActive:
-		fmt.Printf("✅ Tunnel status changed to active on server\n")
+		w.out.Printf("✅ Tunnel status changed to active on server\n")
 	case statusPaused:
-		fmt.Printf("⏸️ Tunnel status changed to paused on server\n")
+		w.out.Printf("⏸️ Tunnel status changed to paused on server\n")
 	case statusNotActive:
-		fmt.Printf("⚪ Tunnel status changed to not active on server\n")
+		w.out.Printf("⚪ Tunnel status changed to not active on server\n")
 	default:
-		fmt.Printf("📨 Tunnel status changed on server: %s\n", status)
+		w.out.Printf("📨 Tunnel status changed on server: %s\n", status)
 	}
 }
 
@@ -338,7 +370,7 @@ func checkTunnelDeleted(client *http.Client, serverURL, tunnelID string) bool {
 	return checkTunnelTerminal(client, serverURL, tunnelID, "")
 }
 
-func startControlMessageReader(
+func (w *Watcher) startControlMessageReader(
 	conn *websocket.Conn,
 	ackCh chan<- struct{},
 	intervalCh chan<- time.Duration,
@@ -349,13 +381,13 @@ func startControlMessageReader(
 	go func() {
 		lastStatus := statusActive
 		for {
-			var msg map[string]interface{}
+			var msg protocolv1.Envelope
 			if err := conn.ReadJSON(&msg); err != nil {
 				logWebSocketReadError(err)
 				doneOnce.Do(func() { close(done) })
 				return
 			}
-			if handleControlMessage(msg, ackCh, intervalCh, done, doneOnce, defaultWatchInterval, &lastStatus) {
+			if w.handleControlMessage(msg, ackCh, intervalCh, done, doneOnce, defaultWatchInterval, &lastStatus) {
 				return
 			}
 		}
@@ -379,6 +411,54 @@ func logWebSocketReadError(err error) {
 	}
 }
 
+func (w *Watcher) handleControlMessage(
+	msg protocolv1.Envelope,
+	ackCh chan<- struct{},
+	intervalCh chan<- time.Duration,
+	done chan struct{},
+	doneOnce *sync.Once,
+	defaultWatchInterval time.Duration,
+	lastStatus *string,
+) bool {
+	switch msg.Type {
+	case protocolv1.MessageTypePong:
+		w.out.Printf("💓 Ping received at %s\n", time.Now().Format("15:04:05"))
+	case protocolv1.EventTunnelClosed:
+		reason := extractTunnelCloseReason(msg)
+		logDebug("tunnel_closed reason=%s", reason)
+		w.out.Println(MsgTunnelRemovedExiting)
+		doneOnce.Do(func() { close(done) })
+		return true
+	case protocolv1.EventTunnelUpdated:
+		var payload protocolv1.LifecycleEventPayload
+		if err := msg.DecodePayload(&payload); err == nil {
+			if payload.Status == StatusExpired {
+				w.out.Println(MsgTunnelRemovedExiting)
+				doneOnce.Do(func() { close(done) })
+				return true
+			}
+			if payload.Status != "" && (lastStatus == nil || *lastStatus != payload.Status) {
+				w.printTunnelStatusChange(payload.Status)
+				if lastStatus != nil {
+					*lastStatus = payload.Status
+				}
+			}
+		}
+	case protocolv1.MessageTypeSubscribed:
+		notifyAckReceived(ackCh)
+		updateFallbackInterval(intervalCh, defaultWatchInterval)
+		w.out.Printf("📨 Message: %s\n", msg.Type)
+	case protocolv1.MessageTypeError:
+		var payload protocolv1.ErrorPayload
+		if err := msg.DecodePayload(&payload); err == nil && payload.Message != "" {
+			w.out.Printf("❌ Error: %s\n", payload.Message)
+		}
+	default:
+		w.out.Printf("📨 Message: %s\n", msg.Type)
+	}
+	return false
+}
+
 func handleControlMessage(
 	msg map[string]interface{},
 	ackCh chan<- struct{},
@@ -388,65 +468,50 @@ func handleControlMessage(
 	defaultWatchInterval time.Duration,
 	lastStatus *string,
 ) bool {
-	//nolint:errcheck // type assertion ok false is handled by default case
-	msgType, _ := msg["type"].(string)
-	switch msgType {
-	case "pong":
-		fmt.Printf("💓 Ping received at %s\n", time.Now().Format("15:04:05"))
-	case "tunnel_closed":
-		reason := extractTunnelCloseReason(msg)
-		logDebug("tunnel_closed reason=%s", reason)
-		fmt.Println(MsgTunnelRemovedExiting)
-		doneOnce.Do(func() { close(done) })
-		return true
-	case "tunnel_updated":
-		if payload := extractPayload(msg); payload != nil {
-			if status, ok := payload["status"].(string); ok {
-				if status == StatusExpired {
-					fmt.Println(MsgTunnelRemovedExiting)
-					doneOnce.Do(func() { close(done) })
-					return true
-				}
-				if lastStatus == nil || *lastStatus != status {
-					printTunnelStatusChange(status)
-					if lastStatus != nil {
-						*lastStatus = status
-					}
-				}
-			}
-		}
-	case "subscribed":
-		notifyAckReceived(ackCh)
-		updateFallbackInterval(intervalCh, defaultWatchInterval)
-		fmt.Printf("📨 Message: %s\n", msgType)
-	case "error":
-		if payload := extractPayload(msg); payload != nil {
-			if message, ok := payload["message"].(string); ok {
-				fmt.Printf("❌ Error: %s\n", message)
-			}
-		}
-	default:
-		fmt.Printf("📨 Message: %s\n", msgType)
-	}
-	return false
+	return NewWatcher(nil).handleControlMessage(
+		envelopeFromMap(msg),
+		ackCh,
+		intervalCh,
+		done,
+		doneOnce,
+		defaultWatchInterval,
+		lastStatus,
+	)
 }
 
-func extractTunnelCloseReason(msg map[string]interface{}) string {
-	payload := extractPayload(msg)
-	if payload == nil {
-		return "unknown"
+func extractTunnelCloseReason(msg any) string {
+	var payload protocolv1.LifecycleEventPayload
+	switch v := msg.(type) {
+	case protocolv1.Envelope:
+		if err := v.DecodePayload(&payload); err == nil && payload.Reason != "" {
+			return payload.Reason
+		}
+	case map[string]interface{}:
+		if raw, ok := v["payload"].(map[string]interface{}); ok {
+			if reason, ok := raw["reason"].(string); ok && reason != "" {
+				return reason
+			}
+		}
 	}
-	if reason, ok := payload["reason"].(string); ok && reason != "" {
-		return reason
-	}
-	return "unknown"
+	return protocolv1.ReasonUnknown
 }
 
 func extractPayload(msg map[string]interface{}) map[string]interface{} {
-	if payload, ok := msg["payload"].(map[string]interface{}); ok {
-		return payload
+	payload, _ := msg["payload"].(map[string]interface{})
+	return payload
+}
+
+func envelopeFromMap(msg map[string]interface{}) protocolv1.Envelope {
+	envelope := protocolv1.Envelope{}
+	if msgType, ok := msg["type"].(string); ok {
+		envelope.Type = msgType
 	}
-	return nil
+	if payload, ok := msg["payload"]; ok {
+		if data, err := json.Marshal(payload); err == nil {
+			envelope.Payload = data
+		}
+	}
+	return envelope
 }
 
 func notifyAckReceived(ackCh chan<- struct{}) {

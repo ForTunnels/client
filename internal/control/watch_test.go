@@ -1,3 +1,5 @@
+//go:build integration
+
 // SPDX-License-Identifier: PROPRIETARY
 // Copyright (c) 2026 ForTunnels
 

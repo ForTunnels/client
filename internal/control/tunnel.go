@@ -16,24 +16,11 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	protocolv1 "github.com/fortunnels/client/shared/protocol/v1"
 )
 
-// Response is the JSON representation returned by the server when
-// creating a tunnel via REST API.
-type Response struct {
-	ID          string    `json:"id"`
-	UserID      int64     `json:"user_id"`
-	Protocol    string    `json:"protocol"`
-	TargetAddr  string    `json:"target_addr"`
-	PublicURL   string    `json:"public_url"`
-	Status      string    `json:"status"`
-	CreatedAt   time.Time `json:"created_at"`
-	LastActive  time.Time `json:"last_active"`
-	Connections int       `json:"connections"`
-	IsGuest     bool      `json:"is_guest"`
-	BytesUsed   int64     `json:"bytes_used"`
-	ExpiresAt   time.Time `json:"expires_at"`
-}
+type Response = protocolv1.Tunnel
 
 // createTunnelWithClient allows passing http.Client (with cookiejar) and bearer token
 func CreateTunnelWithClient(
@@ -41,17 +28,18 @@ func CreateTunnelWithClient(
 	client *http.Client,
 	bearer string,
 ) (*Response, error) {
-	requestBody := map[string]interface{}{
-		"target_addr": localAddr,
-		"protocol":    protocol,
-		"user_id":     userID,
+	requestBody := protocolv1.TunnelCreateRequest{
+		TargetAddr: localAddr,
+		Protocol:   protocol,
+		UserID:     userID,
 	}
 	if strings.EqualFold(protocol, "https") {
 		// Автоконфигурация для localhost: разрешаем self-signed и подставляем SNI
 		if h, _, err := net.SplitHostPort(localAddr); err == nil {
 			if h == "localhost" || h == "127.0.0.1" { // локальная разработка
-				requestBody["tls_insecure_skip_verify"] = true
-				requestBody["tls_server_name"] = "localhost"
+				insecure := true
+				requestBody.TLSInsecureSkipVerify = &insecure
+				requestBody.TLSServerName = "localhost"
 			}
 		}
 	}
@@ -142,12 +130,19 @@ func DeleteTunnelWithClient(serverURL, tunnelID string, client *http.Client, bea
 
 // printTunnelInfo displays comprehensive information about the created tunnel.
 func PrintTunnelInfo(tunnel *Response) {
-	fmt.Printf("✅ Tunnel created successfully!\n")
-	fmt.Printf("🔗 Public URL: %s\n", tunnel.PublicURL)
-	fmt.Printf("🆔 Tunnel ID: %s\n", tunnel.ID)
-	fmt.Printf("📊 Status: %s\n", tunnel.Status)
+	PrintTunnelInfoWithOutput(StdOutput{}, tunnel)
+}
+
+func PrintTunnelInfoWithOutput(out Output, tunnel *Response) {
+	if out == nil {
+		out = StdOutput{}
+	}
+	out.Printf("✅ Tunnel created successfully!\n")
+	out.Printf("🔗 Public URL: %s\n", tunnel.PublicURL)
+	out.Printf("🆔 Tunnel ID: %s\n", tunnel.ID)
+	out.Printf("📊 Status: %s\n", tunnel.Status)
 	if tunnel.IsGuest {
-		fmt.Printf(
+		out.Printf(
 			"ℹ️ Гостевой туннель: срок жизни до %s, лимит трафика 1 GB.\n",
 			tunnel.ExpiresAt.Local().Format("2006-01-02 15:04:05"),
 		)
@@ -156,12 +151,19 @@ func PrintTunnelInfo(tunnel *Response) {
 
 // printHTTPHints prints example curl commands for path-based and host-based usage.
 func PrintHTTPHints(serverURL string, t *Response) {
-	fmt.Println("\n💡 Usage hints (HTTP):")
-	fmt.Printf(
+	PrintHTTPHintsWithOutput(StdOutput{}, serverURL, t)
+}
+
+func PrintHTTPHintsWithOutput(out Output, serverURL string, t *Response) {
+	if out == nil {
+		out = StdOutput{}
+	}
+	out.Println("\n💡 Usage hints (HTTP):")
+	out.Printf(
 		"- Path-based (dev): %s/t/%s\n",
 		serverURL,
 		t.ID,
 	)
-	fmt.Printf("- Host-based: %s (use Host header)\n", t.PublicURL)
+	out.Printf("- Host-based: %s (use Host header)\n", t.PublicURL)
 	_ = os.Stdout.Sync()
 }
