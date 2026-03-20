@@ -161,6 +161,9 @@ func Parse() (*Config, error) {
 	cfg.DPAuthSecretFlagProvided = secretFlags.dpAuthSecret
 
 	remaining := fs.Args()
+	if err := validatePositionalArgs(remaining); err != nil {
+		return nil, err
+	}
 	processPositionalArgs(remaining, &cfg.Protocol, &cfg.TargetAddr, localProvided, protocolProvided)
 
 	if err := applyDurationFlags(cfg, &durations); err != nil {
@@ -395,6 +398,27 @@ func applySecretSource(source *secretSource) error {
 		return nil
 	}
 	*source.value = support.GetEnvTrimmed(source.envVar)
+	return nil
+}
+
+func validatePositionalArgs(args []string) error {
+	if len(args) > 2 {
+		return fmt.Errorf(
+			"too many positional arguments: at most 2 allowed (protocol and address); supported protocols: %s, %s, %s, %s; use -protocol / -local for explicit values",
+			protoHTTP, protoHTTPS, protoTCP, protoUDP,
+		)
+	}
+	if len(args) != 2 {
+		return nil
+	}
+	a0 := strings.ToLower(args[0])
+	a1 := strings.ToLower(args[1])
+	if isSupportedProtocol(a1) && !isSupportedProtocol(a0) {
+		return fmt.Errorf(
+			"invalid argument order: protocol must come before address (e.g. %s %s); or use -protocol and -local",
+			args[1], args[0],
+		)
+	}
 	return nil
 }
 

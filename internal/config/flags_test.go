@@ -4,6 +4,7 @@
 package config
 
 import (
+	"flag"
 	"os"
 	"testing"
 
@@ -117,6 +118,69 @@ func TestProcessPositionalArgs_TCPPort(t *testing.T) {
 	processPositionalArgs([]string{"tcp", "5433"}, &protocol, &targetAddr, false, false)
 	assert.Equal(t, protoTCP, protocol, "tcp 5433 should set protocol to tcp")
 	assert.Equal(t, "127.0.0.1:5433", targetAddr, "tcp 5433 should set target_addr to 127.0.0.1:5433")
+}
+
+func TestValidatePositionalArgs(t *testing.T) {
+	tests := []struct {
+		name        string
+		args        []string
+		wantErr     bool
+		errContains string // when wantErr: expected substring in validatePositionalArgs error
+	}{
+		{"empty", nil, false, ""},
+		{"single port", []string{"8000"}, false, ""},
+		{"protocol then port", []string{"tcp", "5433"}, false, ""},
+		{"protocol then host:port", []string{"http", "127.0.0.1:8080"}, false, ""},
+		{"port then protocol swapped", []string{"5433", "tcp"}, true, "invalid argument order"},
+		{"host:port then protocol swapped", []string{"127.0.0.1:8080", "http"}, true, "invalid argument order"},
+		{"three positionals", []string{"tcp", "5433", "extra"}, true, "too many positional"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validatePositionalArgs(tt.args)
+			if tt.wantErr {
+				assert.Error(t, err)
+				assert.ErrorContains(t, err, tt.errContains)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+// testParseWithArgs runs Parse() with synthetic argv by replacing os.Args and flag.CommandLine
+// (Parse also invokes normalizeArgs()). Do not use t.Parallel() in tests that call this helper:
+// parallel subtests would race on those process-global values.
+func testParseWithArgs(t *testing.T, args []string) (*Config, error) {
+	t.Helper()
+	oldArgs := os.Args
+	oldFlag := flag.CommandLine
+	t.Cleanup(func() {
+		os.Args = oldArgs
+		flag.CommandLine = oldFlag
+	})
+	flag.CommandLine = flag.NewFlagSet("client", flag.ContinueOnError)
+	os.Args = args
+	return Parse()
+}
+
+func TestParse_RejectsSwappedPositionalArgs(t *testing.T) {
+	_, err := testParseWithArgs(t, []string{"client", "5433", "tcp"})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "invalid argument order")
+}
+
+func TestParse_AcceptsProtocolThenPort(t *testing.T) {
+	cfg, err := testParseWithArgs(t, []string{"client", "tcp", "5433"})
+	require.NoError(t, err)
+	assert.Equal(t, protoTCP, cfg.Protocol)
+	assert.Equal(t, "127.0.0.1:5433", cfg.TargetAddr)
+}
+
+func TestParse_RejectsTooManyPositionals(t *testing.T) {
+	_, err := testParseWithArgs(t, []string{"client", "tcp", "5433", "extra"})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "too many positional")
 }
 
 func TestApplySecretSourcesFromEnv(t *testing.T) {
