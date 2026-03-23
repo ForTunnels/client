@@ -101,14 +101,14 @@ type TunnelPatchRequest struct {
 }
 
 // TunnelListResponse is returned for tunnel list and existence checks.
-// Count is the number of tunnels in this JSON payload (page size for paginated admin lists).
-// Total is the total row count for the list query when using admin pagination (limit/offset); omit or zero when not applicable.
+// Count is the number of tunnels in this JSON payload (current page size).
+// Total is the total row count for the list scope (admin global, user-owned, or guest); set for all paginated GET /api/tunnels lists.
 type TunnelListResponse struct {
 	Exists  bool     `json:"exists,omitempty"`
 	Status  string   `json:"status,omitempty"`
 	Tunnels []Tunnel `json:"tunnels"`
 	Count   int      `json:"count"`
-	Total   int64    `json:"total,omitempty"`
+	Total   int64    `json:"total"`
 }
 
 type DomainBindingRequest struct {
