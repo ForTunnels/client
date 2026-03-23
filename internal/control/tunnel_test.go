@@ -11,6 +11,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestRewriteIngressPublicURL(t *testing.T) {
+	srv := "https://fortunnels.ru"
+	assert.Equal(t, "tcp://fortunnels.ru:30000", rewriteIngressPublicURL(srv, "tcp://127.0.0.1:30000"))
+	assert.Equal(t, "tcp://fortunnels.ru:30000", rewriteIngressPublicURL(srv, "tcp://0.0.0.0:30000"))
+	assert.Equal(t, "udp://fortunnels.ru:10001", rewriteIngressPublicURL(srv, "udp://127.0.0.1:10001"))
+	assert.Equal(t, "https://x.example/t", rewriteIngressPublicURL(srv, "https://x.example/t"))
+	assert.Equal(t, "tcp://already.example:1", rewriteIngressPublicURL(srv, "tcp://already.example:1"))
+	assert.Equal(t, "tcp://127.0.0.1:9", rewriteIngressPublicURL("", "tcp://127.0.0.1:9"))
+	assert.Equal(t, "tcp://127.0.0.1:9", rewriteIngressPublicURL("not-a-url", "tcp://127.0.0.1:9"))
+}
+
 // TestResponseUnmarshal tests that Response struct can correctly unmarshal JSON from server
 func TestResponseUnmarshal(t *testing.T) {
 	// Simulate server response with user_id as number (int64)

@@ -79,7 +79,7 @@ func runClientWorkflow(cfg *config.Config) error {
 	fmt.Printf("Creating tunnel for %s://%s\n", cfg.Protocol, cfg.TargetAddr)
 	fmt.Printf("Connecting to server: %s\n", cfg.ServerURL)
 
-	httpClient, bearer, err := auth.SetupAuthentication(cfg)
+	httpClient, bearer, csrf, err := auth.SetupAuthentication(cfg)
 	if err != nil {
 		return fmt.Errorf("❌ Authentication failed: %w", err)
 	}
@@ -91,6 +91,7 @@ func runClientWorkflow(cfg *config.Config) error {
 		cfg.UserID,
 		httpClient,
 		bearer,
+		csrf,
 	)
 	if err != nil {
 		return clierrors.HandleTunnelCreationError(err, cfg.ServerURL)
@@ -100,14 +101,14 @@ func runClientWorkflow(cfg *config.Config) error {
 	enc := cfg.EncryptionSettings()
 	authToken := auth.ComputeDataPlaneAuth(tun.ID, cfg.DPAuthToken, cfg.DPAuthSecret)
 
-	ctrl.PrintTunnelInfo(tun)
-	if err := handleHTTPProtocol(cfg, runtime, tun, httpClient, bearer); err != nil {
+	ctrl.PrintTunnelInfo(cfg.ServerURL, tun)
+	if err := handleHTTPProtocol(cfg, runtime, tun, httpClient, bearer, csrf); err != nil {
 		return err
 	}
-	if err := handleTCPServeIncoming(cfg, runtime, tun, httpClient, bearer); err != nil {
+	if err := handleTCPServeIncoming(cfg, runtime, tun, httpClient, bearer, csrf); err != nil {
 		return err
 	}
-	if err := handleUDPProtocol(cfg, runtime, enc, tun, authToken, httpClient, bearer); err != nil {
+	if err := handleUDPProtocol(cfg, runtime, enc, tun, authToken, httpClient, bearer, csrf); err != nil {
 		return err
 	}
 
@@ -119,7 +120,7 @@ func runClientWorkflow(cfg *config.Config) error {
 }
 
 // handleHTTPProtocol delegates to tunnel package and TCP data-plane
-func handleHTTPProtocol(cfg *config.Config, runtime config.RuntimeSettings, tun *ctrl.Response, httpClient *http.Client, bearer string) error {
+func handleHTTPProtocol(cfg *config.Config, runtime config.RuntimeSettings, tun *ctrl.Response, httpClient *http.Client, bearer, csrf string) error {
 	if !isHTTPProtocol(cfg.Protocol) {
 		return nil
 	}
@@ -143,7 +144,7 @@ func handleHTTPProtocol(cfg *config.Config, runtime config.RuntimeSettings, tun 
 		return nil
 	case err := <-errCh:
 		if err != nil {
-			ctrl.DeleteTunnelWithClient(cfg.ServerURL, tun.ID, httpClient, bearer)
+			ctrl.DeleteTunnelWithClient(cfg.ServerURL, tun.ID, httpClient, bearer, csrf)
 			return fmt.Errorf("❌ Data-plane serve stopped: %w", err)
 		}
 		return nil
@@ -151,7 +152,7 @@ func handleHTTPProtocol(cfg *config.Config, runtime config.RuntimeSettings, tun 
 }
 
 // handleTCPServeIncoming is the default TCP mode: serve incoming streams from server, dial local backend.
-func handleTCPServeIncoming(cfg *config.Config, runtime config.RuntimeSettings, tun *ctrl.Response, httpClient *http.Client, bearer string) error {
+func handleTCPServeIncoming(cfg *config.Config, runtime config.RuntimeSettings, tun *ctrl.Response, httpClient *http.Client, bearer, csrf string) error {
 	if cfg.Protocol != "tcp" {
 		return nil
 	}
@@ -175,7 +176,7 @@ func handleTCPServeIncoming(cfg *config.Config, runtime config.RuntimeSettings, 
 		return nil
 	case err := <-errCh:
 		if err != nil {
-			ctrl.DeleteTunnelWithClient(cfg.ServerURL, tun.ID, httpClient, bearer)
+			ctrl.DeleteTunnelWithClient(cfg.ServerURL, tun.ID, httpClient, bearer, csrf)
 			return fmt.Errorf("❌ Data-plane serve stopped: %w", err)
 		}
 		return nil
@@ -183,7 +184,7 @@ func handleTCPServeIncoming(cfg *config.Config, runtime config.RuntimeSettings, 
 }
 
 // handleUDPProtocol delegates to UDP, QUIC, and DTLS packages
-func handleUDPProtocol(cfg *config.Config, runtime config.RuntimeSettings, enc config.EncryptionSettings, tun *ctrl.Response, authToken string, httpClient *http.Client, bearer string) error {
+func handleUDPProtocol(cfg *config.Config, runtime config.RuntimeSettings, enc config.EncryptionSettings, tun *ctrl.Response, authToken string, httpClient *http.Client, bearer, csrf string) error {
 	if cfg.Protocol != "udp" {
 		return nil
 	}
@@ -211,7 +212,7 @@ func handleUDPProtocol(cfg *config.Config, runtime config.RuntimeSettings, enc c
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
 	go func() {
-		errCh <- runUDPStrategy(strategy, cfg.ServerURL, tun.ID, httpClient, bearer)
+		errCh <- runUDPStrategy(strategy, cfg.ServerURL, tun.ID, httpClient, bearer, csrf)
 	}()
 	select {
 	case <-sigc:
@@ -246,10 +247,10 @@ func ensureTCPHasTarget(cfg *config.Config) error {
 
 // --- UDP strategy helpers ----------------------------------------------------
 
-func runUDPStrategy(strategy dp.Strategy, serverURL, tunnelID string, httpClient *http.Client, bearer string) error {
+func runUDPStrategy(strategy dp.Strategy, serverURL, tunnelID string, httpClient *http.Client, bearer, csrf string) error {
 	fmt.Println(strategy.RunningMessage)
 	if err := strategy.Run(); err != nil {
-		ctrl.DeleteTunnelWithClient(serverURL, tunnelID, httpClient, bearer)
+		ctrl.DeleteTunnelWithClient(serverURL, tunnelID, httpClient, bearer, csrf)
 		return fmt.Errorf("%s: %w", strategy.ErrLabel, err)
 	}
 	return nil

@@ -22,11 +22,11 @@ import (
 
 type Response = protocolv1.Tunnel
 
-// createTunnelWithClient allows passing http.Client (with cookiejar) and bearer token
+// createTunnelWithClient allows passing http.Client (with cookiejar), bearer token, and optional CSRF header for session auth.
 func CreateTunnelWithClient(
 	serverURL, localAddr, protocol, userID string,
 	client *http.Client,
-	bearer string,
+	bearer, csrf string,
 ) (*Response, error) {
 	requestBody := protocolv1.TunnelCreateRequest{
 		TargetAddr: localAddr,
@@ -58,7 +58,10 @@ func CreateTunnelWithClient(
 	}
 	req.Header.Set("Content-Type", "application/json")
 	if strings.TrimSpace(bearer) != "" {
-		req.Header.Set("Authorization", "Bearer "+bearer)
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(bearer))
+	}
+	if strings.TrimSpace(csrf) != "" {
+		req.Header.Set("X-CSRF-Token", strings.TrimSpace(csrf))
 	}
 	// Select client
 	var hc *http.Client
@@ -92,9 +95,45 @@ func CreateTunnelWithClient(
 	return &tunnel, nil
 }
 
+// rewriteIngressPublicURL replaces loopback hosts in tcp:// and udp:// URLs with the API server's
+// hostname so the CLI shows an address remote users can reach (backward-compatible with older servers).
+func rewriteIngressPublicURL(serverURL, publicURL string) string {
+	if strings.TrimSpace(serverURL) == "" {
+		return publicURL
+	}
+	u, err := url.Parse(publicURL)
+	if err != nil || u.Host == "" {
+		return publicURL
+	}
+	if u.Scheme != "tcp" && u.Scheme != "udp" {
+		return publicURL
+	}
+	host, port, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		return publicURL
+	}
+	switch strings.ToLower(host) {
+	case "127.0.0.1", "0.0.0.0", "::1", "[::1]", "::", "[::]":
+	default:
+		return publicURL
+	}
+	base, err := url.Parse(serverURL)
+	if err != nil {
+		return publicURL
+	}
+	displayHost := base.Hostname()
+	if displayHost == "" {
+		return publicURL
+	}
+	if strings.Contains(displayHost, ":") {
+		return fmt.Sprintf("%s://[%s]:%s", u.Scheme, displayHost, port)
+	}
+	return fmt.Sprintf("%s://%s:%s", u.Scheme, displayHost, port)
+}
+
 // DeleteTunnelWithClient sends DELETE /api/tunnels?id=<id> using the given client.
 // Best-effort cleanup to avoid orphan tunnels when startup fails after creation.
-func DeleteTunnelWithClient(serverURL, tunnelID string, client *http.Client, bearer string) {
+func DeleteTunnelWithClient(serverURL, tunnelID string, client *http.Client, bearer, csrf string) {
 	if tunnelID == "" {
 		return
 	}
@@ -113,7 +152,10 @@ func DeleteTunnelWithClient(serverURL, tunnelID string, client *http.Client, bea
 		return
 	}
 	if strings.TrimSpace(bearer) != "" {
-		req.Header.Set("Authorization", "Bearer "+bearer)
+		req.Header.Set("Authorization", "Bearer "+strings.TrimSpace(bearer))
+	}
+	if strings.TrimSpace(csrf) != "" {
+		req.Header.Set("X-CSRF-Token", strings.TrimSpace(csrf))
 	}
 	resp, err := hc.Do(req)
 	if err != nil {
@@ -129,16 +171,17 @@ func DeleteTunnelWithClient(serverURL, tunnelID string, client *http.Client, bea
 }
 
 // printTunnelInfo displays comprehensive information about the created tunnel.
-func PrintTunnelInfo(tunnel *Response) {
-	PrintTunnelInfoWithOutput(StdOutput{}, tunnel)
+// serverURL is the API base URL (e.g. https://fortunnels.ru); used to fix tcp/udp loopback public URLs in the CLI.
+func PrintTunnelInfo(serverURL string, tunnel *Response) {
+	PrintTunnelInfoWithOutput(StdOutput{}, serverURL, tunnel)
 }
 
-func PrintTunnelInfoWithOutput(out Output, tunnel *Response) {
+func PrintTunnelInfoWithOutput(out Output, serverURL string, tunnel *Response) {
 	if out == nil {
 		out = StdOutput{}
 	}
 	out.Printf("✅ Tunnel created successfully!\n")
-	out.Printf("🔗 Public URL: %s\n", tunnel.PublicURL)
+	out.Printf("🔗 Public URL: %s\n", rewriteIngressPublicURL(serverURL, tunnel.PublicURL))
 	out.Printf("🆔 Tunnel ID: %s\n", tunnel.ID)
 	out.Printf("📊 Status: %s\n", tunnel.Status)
 	if tunnel.IsGuest {

@@ -24,39 +24,35 @@ func TestSetupAuthentication_WithToken(t *testing.T) {
 		ServerURL: "https://example.com",
 	}
 
-	client, bearer, err := SetupAuthentication(cfg)
+	client, bearer, csrf, err := SetupAuthentication(cfg)
 	require.NoError(t, err, "SetupAuthentication()")
 	assert.Equal(t, "bearer-token-123", bearer, "SetupAuthentication() bearer")
+	assert.Empty(t, csrf, "SetupAuthentication() csrf with token")
 	assert.Nil(t, client, "SetupAuthentication() with token should not create HTTP client")
 }
 
 func TestSetupAuthentication_WithLoginPassword(t *testing.T) {
-	// Create a test server that accepts login
+	const testCSRF = "bootstrap-csrf-token"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/auth/login-local" {
-			w.WriteHeader(http.StatusNotFound)
-			return
-		}
-		if r.Method != "POST" {
-			w.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-
-		var payload map[string]string
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-
-		if payload["login"] == "testuser" && payload["password"] == "testpass" {
-			// Set a cookie to simulate session
-			http.SetCookie(w, &http.Cookie{
-				Name:  "session",
-				Value: "session-token",
-			})
-			w.WriteHeader(http.StatusOK)
-		} else {
+		switch {
+		case r.URL.Path == "/auth/login-local" && r.Method == http.MethodPost:
+			var payload map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if payload["login"] == "testuser" && payload["password"] == "testpass" {
+				http.SetCookie(w, &http.Cookie{Name: "session", Value: "session-token", Path: "/"})
+				w.WriteHeader(http.StatusOK)
+				return
+			}
 			w.WriteHeader(http.StatusUnauthorized)
+		case r.URL.Path == "/auth/me" && r.Method == http.MethodGet:
+			// Simulates real server: CSRF cookie after authenticated GET
+			http.SetCookie(w, &http.Cookie{Name: csrfCookieName, Value: testCSRF, Path: "/"})
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
 		}
 	}))
 	defer server.Close()
@@ -67,22 +63,19 @@ func TestSetupAuthentication_WithLoginPassword(t *testing.T) {
 		ServerURL: server.URL,
 	}
 
-	client, bearer, err := SetupAuthentication(cfg)
+	client, bearer, csrf, err := SetupAuthentication(cfg)
 	require.NoError(t, err, "SetupAuthentication()")
 	assert.Empty(t, bearer, "SetupAuthentication() bearer")
+	assert.Equal(t, testCSRF, csrf, "SetupAuthentication() should return CSRF from bootstrap GET")
 	require.NotNil(t, client, "SetupAuthentication() with login/password should create HTTP client")
-
-	// Verify cookie jar was set
 	assert.NotNil(t, client.Jar, "SetupAuthentication() should set cookie jar")
 
-	// Verify cookies are stored by checking the jar
-	// The cookie jar should have cookies from the login request
-	serverURL, _ := url.Parse(server.URL)
-	cookieCount := len(client.Jar.Cookies(serverURL))
-	// Note: Cookies are set by the server response, verify jar exists and can store cookies
-	assert.NotNil(t, client.Jar, "SetupAuthentication() should create cookie jar")
-	// Cookie count may be 0 if server doesn't set cookies, but jar should exist
-	_ = cookieCount // Verify jar is functional
+	serverURL, err := url.Parse(server.URL)
+	require.NoError(t, err)
+	if serverURL.Path == "" {
+		serverURL.Path = "/"
+	}
+	assert.GreaterOrEqual(t, len(client.Jar.Cookies(serverURL)), 1, "jar should hold session and/or csrf cookies")
 }
 
 func TestSetupAuthentication_WithLoginPassword_InvalidCredentials(t *testing.T) {
@@ -98,7 +91,7 @@ func TestSetupAuthentication_WithLoginPassword_InvalidCredentials(t *testing.T) 
 		ServerURL: server.URL,
 	}
 
-	_, _, err := SetupAuthentication(cfg)
+	_, _, _, err := SetupAuthentication(cfg)
 	require.Error(t, err, "SetupAuthentication() with invalid credentials should return error")
 }
 
@@ -107,9 +100,10 @@ func TestSetupAuthentication_Empty(t *testing.T) {
 		ServerURL: "https://example.com",
 	}
 
-	client, bearer, err := SetupAuthentication(cfg)
+	client, bearer, csrf, err := SetupAuthentication(cfg)
 	require.NoError(t, err, "SetupAuthentication()")
 	assert.Empty(t, bearer, "SetupAuthentication() bearer")
+	assert.Empty(t, csrf, "SetupAuthentication() csrf")
 	assert.Nil(t, client, "SetupAuthentication() with empty config should not create HTTP client")
 }
 
@@ -119,9 +113,10 @@ func TestSetupAuthentication_WithToken_Whitespace(t *testing.T) {
 		ServerURL: "https://example.com",
 	}
 
-	_, bearer, err := SetupAuthentication(cfg)
+	_, bearer, csrf, err := SetupAuthentication(cfg)
 	require.NoError(t, err, "SetupAuthentication()")
 	assert.Equal(t, "bearer-token-123", bearer, "SetupAuthentication() bearer")
+	assert.Empty(t, csrf, "SetupAuthentication() csrf with token")
 }
 
 func TestLoginLocal(t *testing.T) {
