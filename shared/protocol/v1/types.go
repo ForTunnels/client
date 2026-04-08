@@ -104,7 +104,8 @@ type TunnelPatchRequest struct {
 // Count is the number of tunnels in this JSON payload (current page size).
 // Total is the total row count for the list scope (admin global, user-owned, or guest); set for all paginated GET /api/tunnels lists.
 type TunnelListResponse struct {
-	Exists  bool     `json:"exists,omitempty"`
+	// Exists must serialize when false (no omitempty) so GET /api/tunnels?id=... can signal not found.
+	Exists  bool     `json:"exists"`
 	Status  string   `json:"status,omitempty"`
 	Tunnels []Tunnel `json:"tunnels"`
 	Count   int      `json:"count"`

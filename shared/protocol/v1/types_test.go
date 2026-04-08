@@ -2,6 +2,7 @@ package v1
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 )
@@ -85,5 +86,14 @@ func TestTunnelListResponseJSON(t *testing.T) {
 	}
 	if decoded.Tunnels[0].Status != StatusPaused {
 		t.Fatalf("unexpected tunnel status %q", decoded.Tunnels[0].Status)
+	}
+
+	empty := TunnelListResponse{Exists: false, Tunnels: []Tunnel{}, Count: 0, Total: 0}
+	emptyJSON, err := json.Marshal(empty)
+	if err != nil {
+		t.Fatalf("marshal empty response: %v", err)
+	}
+	if !strings.Contains(string(emptyJSON), `"exists":false`) {
+		t.Fatalf("expected false exists in JSON, got %s", emptyJSON)
 	}
 }
