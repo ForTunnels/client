@@ -54,6 +54,14 @@ make build BIN_DIR=../bin
 
 Binaries for common platforms are available in [releases](https://github.com/fortunnels/client/releases).
 
+On **Windows**, you can install from the [Chocolatey Community Repository](https://community.chocolatey.org/) when the package is available:
+
+```powershell
+choco install fortunnels
+```
+
+On **macOS** and **Linux**, a Homebrew tap is published separately; see the main ForTunnels site.
+
 ## Quick start
 
 ### HTTP tunnel
