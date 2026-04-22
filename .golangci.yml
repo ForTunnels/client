@@ -42,6 +42,7 @@ linters-settings:
     check-type-assertions: true
     check-blank: true
 
+# "deadcode" is not a valid golangci-lint linter anymore (inactivated; use "unused" below).
 linters:
   enable:
     - bodyclose
