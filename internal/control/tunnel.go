@@ -192,21 +192,16 @@ func PrintTunnelInfoWithOutput(out Output, serverURL string, tunnel *Response) {
 	}
 }
 
-// printHTTPHints prints example curl commands for path-based and host-based usage.
-func PrintHTTPHints(serverURL string, t *Response) {
-	PrintHTTPHintsWithOutput(StdOutput{}, serverURL, t)
+// PrintHTTPHints prints host-based public URL usage for HTTP tunnels.
+func PrintHTTPHints(t *Response) {
+	PrintHTTPHintsWithOutput(StdOutput{}, t)
 }
 
-func PrintHTTPHintsWithOutput(out Output, serverURL string, t *Response) {
+func PrintHTTPHintsWithOutput(out Output, t *Response) {
 	if out == nil {
 		out = StdOutput{}
 	}
 	out.Println("\n💡 Usage hints (HTTP):")
-	out.Printf(
-		"- Path-based: %s/t/%s (HTML/CSS and apex navigation are rewritten for browser use; prefer host URL if your app uses the same paths as this server, e.g. /api/)\n",
-		serverURL,
-		t.ID,
-	)
 	out.Printf("- Host-based (most transparent): %s\n", t.PublicURL)
 	_ = os.Stdout.Sync()
 }

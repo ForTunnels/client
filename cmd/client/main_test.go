@@ -45,14 +45,13 @@ func TestPrintHTTPHints(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
-	srv := "http://127.0.0.1:8080"
 	tun := &ctrlTunnel.Response{
 		ID:         "tid",
 		UserID:     100, // int64, not string
 		TargetAddr: "127.0.0.1:8000",
 		PublicURL:  "http://pub",
 	}
-	ctrlTunnel.PrintHTTPHints(srv, tun)
+	ctrlTunnel.PrintHTTPHints(tun)
 
 	_ = w.Close()
 	os.Stdout = old
@@ -64,8 +63,8 @@ func TestPrintHTTPHints(t *testing.T) {
 	if !strings.Contains(out, "Usage hints (HTTP)") {
 		t.Fatalf("expected usage hints header in output, got: %s", out)
 	}
-	if !strings.Contains(out, "/t/tid") {
-		t.Fatalf("expected path-based example with tunnel ID, got: %s", out)
+	if !strings.Contains(out, "http://pub") {
+		t.Fatalf("expected host-based public URL in output, got: %s", out)
 	}
 }
 
