@@ -84,7 +84,7 @@ func TestStartStreamToUDPLocal_WithMocks(t *testing.T) {
 }
 
 func TestManager_EnsureSession_Stopped(t *testing.T) {
-	mgr := NewManager("http://example.com", "tunnel-123", time.Second, 30*time.Second, config.RuntimeSettings{})
+	mgr := NewManager("http://example.com", "tunnel-123", "", time.Second, 30*time.Second, config.RuntimeSettings{})
 	mgr.Close()
 
 	_, err := mgr.EnsureSession()
@@ -95,7 +95,7 @@ func TestManager_InitializeSession_Error(t *testing.T) {
 	// This tests the error path in initializeSession.
 	// EnsureSession() dials the server and retries with backoff, so run with a timeout
 	// to avoid hanging when the dial is slow or never fails.
-	mgr := NewManager("http://example.com", "tunnel-123", time.Second, 30*time.Second, config.RuntimeSettings{})
+	mgr := NewManager("http://example.com", "tunnel-123", "", time.Second, 30*time.Second, config.RuntimeSettings{})
 
 	done := make(chan struct{})
 	var err error

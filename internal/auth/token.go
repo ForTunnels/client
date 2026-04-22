@@ -22,6 +22,22 @@ func ComputeDataPlaneAuth(tunnelID, dpAuthTokenFlag, dpAuthSecretFlag string) st
 	return ""
 }
 
+// ComputeDataPlaneAuthWithPSK is like ComputeDataPlaneAuth but falls back to psk when encrypt is true
+// and no explicit dp-auth secret/token was provided (same material as stream PSK for dev setups).
+func ComputeDataPlaneAuthWithPSK(tunnelID, dpAuthTokenFlag, dpAuthSecretFlag, psk string, encrypt bool) string {
+	if strings.TrimSpace(dpAuthTokenFlag) != "" {
+		return dpAuthTokenFlag
+	}
+	sec := strings.TrimSpace(dpAuthSecretFlag)
+	if sec == "" && encrypt {
+		sec = strings.TrimSpace(psk)
+	}
+	if sec == "" {
+		return ""
+	}
+	return computeHMAC(sec, tunnelID)
+}
+
 // computeHMAC returns hex-encoded HMAC-SHA256(secret, message)
 func computeHMAC(secret, message string) string {
 	h := hmac.New(sha256.New, []byte(secret))

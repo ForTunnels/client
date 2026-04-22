@@ -203,10 +203,10 @@ func PrintHTTPHintsWithOutput(out Output, serverURL string, t *Response) {
 	}
 	out.Println("\n💡 Usage hints (HTTP):")
 	out.Printf(
-		"- Path-based (dev): %s/t/%s\n",
+		"- Path-based: %s/t/%s (HTML/CSS and apex navigation are rewritten for browser use; prefer host URL if your app uses the same paths as this server, e.g. /api/)\n",
 		serverURL,
 		t.ID,
 	)
-	out.Printf("- Host-based: %s (use Host header)\n", t.PublicURL)
+	out.Printf("- Host-based (most transparent): %s\n", t.PublicURL)
 	_ = os.Stdout.Sync()
 }

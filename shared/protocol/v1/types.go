@@ -76,12 +76,14 @@ type Tunnel struct {
 	Transport             string    `json:"transport,omitempty"`
 	TLSInsecureSkipVerify bool      `json:"tls_insecure_skip_verify,omitempty"`
 	TLSServerName         string    `json:"tls_server_name,omitempty"`
-	Reachable             bool      `json:"reachable"`
-	ReachCheckAt          time.Time `json:"reach_check_at"`
-	BytesUsed             int64     `json:"bytes_used"`
-	ExpiresAt             time.Time `json:"expires_at"`
-	TrafficLimitBytes     int64     `json:"traffic_limit_bytes"`
-	IsGuest               bool      `json:"is_guest,omitempty"`
+	// DisableSPAShim skips path-ingress JS shim when true (tunnel-aware HTTP apps on path URLs).
+	DisableSPAShim    bool      `json:"disable_spa_shim,omitempty"`
+	Reachable         bool      `json:"reachable"`
+	ReachCheckAt      time.Time `json:"reach_check_at"`
+	BytesUsed         int64     `json:"bytes_used"`
+	ExpiresAt         time.Time `json:"expires_at"`
+	TrafficLimitBytes int64     `json:"traffic_limit_bytes"`
+	IsGuest           bool      `json:"is_guest,omitempty"`
 }
 
 type TunnelCreateRequest struct {
@@ -91,13 +93,17 @@ type TunnelCreateRequest struct {
 	RedirectHTTP          *bool  `json:"redirect_http,omitempty"`
 	TLSInsecureSkipVerify *bool  `json:"tls_insecure_skip_verify,omitempty"`
 	TLSServerName         string `json:"tls_server_name,omitempty"`
+	DisableSPAShim        *bool  `json:"disable_spa_shim,omitempty"`
 }
 
 type TunnelPatchRequest struct {
-	ID           string `json:"id"`
-	Action       string `json:"action"`
-	RedirectHTTP *bool  `json:"redirect_http,omitempty"`
-	Transport    string `json:"transport,omitempty"`
+	ID                    string `json:"id"`
+	Action                string `json:"action"`
+	RedirectHTTP          *bool  `json:"redirect_http,omitempty"`
+	Transport             string `json:"transport,omitempty"`
+	DisableSPAShim        *bool  `json:"disable_spa_shim,omitempty"`
+	TLSInsecureSkipVerify *bool  `json:"tls_insecure_skip_verify,omitempty"`
+	TLSServerName         string `json:"tls_server_name,omitempty"`
 }
 
 // TunnelListResponse is returned for tunnel list and existence checks.

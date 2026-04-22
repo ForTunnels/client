@@ -15,8 +15,8 @@ import (
 )
 
 // StartDataPlaneUDP listens on udpListen and forwards via WS/smux to server.
-func StartDataPlaneUDP(serverURL, tunnelID, dst, listenAddr string, runtime config.RuntimeSettings, enc config.EncryptionSettings) error {
-	sess, cleanup, err := CreateDataPlaneSession(serverURL, tunnelID, runtime)
+func StartDataPlaneUDP(serverURL, tunnelID, dst, listenAddr string, runtime config.RuntimeSettings, enc config.EncryptionSettings, dpAuthToken string) error {
+	sess, cleanup, err := CreateDataPlaneSession(serverURL, tunnelID, runtime, dpAuthToken)
 	if err != nil {
 		return err
 	}

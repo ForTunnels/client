@@ -99,13 +99,13 @@ func runClientWorkflow(cfg *config.Config) error {
 
 	runtime := cfg.RuntimeSettings()
 	enc := cfg.EncryptionSettings()
-	authToken := auth.ComputeDataPlaneAuth(tun.ID, cfg.DPAuthToken, cfg.DPAuthSecret)
+	authToken := auth.ComputeDataPlaneAuthWithPSK(tun.ID, cfg.DPAuthToken, cfg.DPAuthSecret, cfg.PSK, enc.Enabled)
 
 	ctrl.PrintTunnelInfo(cfg.ServerURL, tun)
-	if err := handleHTTPProtocol(cfg, runtime, tun, httpClient, bearer, csrf); err != nil {
+	if err := handleHTTPProtocol(cfg, runtime, tun, httpClient, bearer, csrf, authToken); err != nil {
 		return err
 	}
-	if err := handleTCPServeIncoming(cfg, runtime, tun, httpClient, bearer, csrf); err != nil {
+	if err := handleTCPServeIncoming(cfg, runtime, tun, httpClient, bearer, csrf, authToken); err != nil {
 		return err
 	}
 	if err := handleUDPProtocol(cfg, runtime, enc, tun, authToken, httpClient, bearer, csrf); err != nil {
@@ -120,7 +120,7 @@ func runClientWorkflow(cfg *config.Config) error {
 }
 
 // handleHTTPProtocol delegates to tunnel package and TCP data-plane
-func handleHTTPProtocol(cfg *config.Config, runtime config.RuntimeSettings, tun *ctrl.Response, httpClient *http.Client, bearer, csrf string) error {
+func handleHTTPProtocol(cfg *config.Config, runtime config.RuntimeSettings, tun *ctrl.Response, httpClient *http.Client, bearer, csrf, dpAuthToken string) error {
 	if !isHTTPProtocol(cfg.Protocol) {
 		return nil
 	}
@@ -128,7 +128,7 @@ func handleHTTPProtocol(cfg *config.Config, runtime config.RuntimeSettings, tun 
 	errCh := make(chan error, 1)
 	tunnelDeletedCh := make(chan struct{})
 	go func() {
-		errCh <- dp.StartDataPlaneServeIncoming(cfg.ServerURL, tun.ID, runtime, reporter)
+		errCh <- dp.StartDataPlaneServeIncoming(cfg.ServerURL, tun.ID, runtime, reporter, dpAuthToken)
 	}()
 	go ctrl.RunFallbackLifecyclePoller(httpClient, cfg.ServerURL, tun.ID, bearer, func() { close(tunnelDeletedCh) }, runtime.WatchInterval)
 
@@ -152,7 +152,7 @@ func handleHTTPProtocol(cfg *config.Config, runtime config.RuntimeSettings, tun 
 }
 
 // handleTCPServeIncoming is the default TCP mode: serve incoming streams from server, dial local backend.
-func handleTCPServeIncoming(cfg *config.Config, runtime config.RuntimeSettings, tun *ctrl.Response, httpClient *http.Client, bearer, csrf string) error {
+func handleTCPServeIncoming(cfg *config.Config, runtime config.RuntimeSettings, tun *ctrl.Response, httpClient *http.Client, bearer, csrf, dpAuthToken string) error {
 	if cfg.Protocol != "tcp" {
 		return nil
 	}
@@ -160,7 +160,7 @@ func handleTCPServeIncoming(cfg *config.Config, runtime config.RuntimeSettings, 
 	errCh := make(chan error, 1)
 	tunnelDeletedCh := make(chan struct{})
 	go func() {
-		errCh <- dp.StartDataPlaneServeIncoming(cfg.ServerURL, tun.ID, runtime, reporter)
+		errCh <- dp.StartDataPlaneServeIncoming(cfg.ServerURL, tun.ID, runtime, reporter, dpAuthToken)
 	}()
 	go ctrl.RunFallbackLifecyclePoller(httpClient, cfg.ServerURL, tun.ID, bearer, func() { close(tunnelDeletedCh) }, runtime.WatchInterval)
 	log.Printf("INFO: TCP expose-local mode active; backend target %s", cfg.TargetAddr)

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 )
 
@@ -27,7 +28,7 @@ func encodePreface(fields map[string]string) ([]byte, error) {
 	return append(b, '\n'), nil
 }
 
-func buildWebSocketURL(serverURL, tunnelID string) (wsURL, origin string, err error) {
+func buildWebSocketURL(serverURL, tunnelID, authToken string) (wsURL, origin string, err error) {
 	u, parseErr := url.Parse(serverURL)
 	if parseErr != nil || u.Scheme == "" || u.Host == "" {
 		if parseErr == nil {
@@ -53,6 +54,9 @@ func buildWebSocketURL(serverURL, tunnelID string) (wsURL, origin string, err er
 	q := u.Query()
 	q.Set("mode", "data")
 	q.Set("tunnel_id", tunnelID)
+	if strings.TrimSpace(authToken) != "" {
+		q.Set("auth", strings.TrimSpace(authToken))
+	}
 	u.RawQuery = q.Encode()
 
 	wsURL = u.String()

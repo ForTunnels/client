@@ -12,6 +12,14 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+func TestComputeDataPlaneAuthWithPSK_Fallback(t *testing.T) {
+	tid := "t-1"
+	got := ComputeDataPlaneAuthWithPSK(tid, "", "", "psk-fallback-psk-fallback-psk", true)
+	want := computeHMAC("psk-fallback-psk-fallback-psk", tid)
+	assert.Equal(t, want, got)
+	assert.Empty(t, ComputeDataPlaneAuthWithPSK(tid, "", "", "", true))
+}
+
 func TestComputeDataPlaneAuth(t *testing.T) {
 	tests := []struct {
 		name         string

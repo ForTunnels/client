@@ -67,7 +67,7 @@ func NewStrategy(
 			"UDP tunnel stopped.",
 			"udp mode error",
 			func() error {
-				return StartDataPlaneUDP(serverURL, tunnelID, dst, listen, runtime, enc)
+				return StartDataPlaneUDP(serverURL, tunnelID, dst, listen, runtime, enc, authToken)
 			},
 		)
 	}

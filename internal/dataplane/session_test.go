@@ -8,6 +8,7 @@ package dataplane
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -90,7 +91,7 @@ func TestClientSession(t *testing.T) {
 }
 
 func TestManagerClose(t *testing.T) {
-	mgr := NewManager("http://example.com", "tunnel-123", time.Second, 30*time.Second, config.RuntimeSettings{})
+	mgr := NewManager("http://example.com", "tunnel-123", "", time.Second, 30*time.Second, config.RuntimeSettings{})
 	mgr.Close()
 
 	// Verify stopped flag
@@ -108,7 +109,7 @@ func TestManagerClose(t *testing.T) {
 }
 
 func TestManagerEnsureSession_Stopped(t *testing.T) {
-	mgr := NewManager("http://example.com", "tunnel-123", time.Second, 30*time.Second, config.RuntimeSettings{})
+	mgr := NewManager("http://example.com", "tunnel-123", "", time.Second, 30*time.Second, config.RuntimeSettings{})
 	mgr.Close()
 
 	// EnsureSession should return error when stopped
@@ -160,7 +161,7 @@ func TestNewWSSmuxClient_Integration(t *testing.T) {
 	}
 
 	// This will fail because we need a proper smux server, but we can test the connection part
-	_, err := NewWSSmuxClient("http://"+serverURL, "test-tunnel", runtime)
+	_, err := NewWSSmuxClient("http://"+serverURL, "test-tunnel", runtime, "")
 	// The error is expected because smux.Client needs proper initialization
 	if err != nil {
 		if !strings.Contains(err.Error(), "smux") && !strings.Contains(err.Error(), "ws dial") {
@@ -210,7 +211,7 @@ func TestCreateDataPlaneSession_Integration(t *testing.T) {
 	}
 
 	// This will fail because we need a proper smux server, but we can test the connection part
-	_, cleanup, err := CreateDataPlaneSession("http://"+serverURL, "test-tunnel", runtime)
+	_, cleanup, err := CreateDataPlaneSession("http://"+serverURL, "test-tunnel", runtime, "")
 	if cleanup != nil {
 		defer cleanup()
 	}
@@ -223,7 +224,7 @@ func TestCreateDataPlaneSession_Integration(t *testing.T) {
 }
 
 func TestManager_SessionDialParams(t *testing.T) {
-	mgr := NewManager("https://example.com", "tunnel-123", time.Second, 30*time.Second, config.RuntimeSettings{})
+	mgr := NewManager("https://example.com", "tunnel-123", "", time.Second, 30*time.Second, config.RuntimeSettings{})
 	wsURL, headers := mgr.sessionDialParams()
 
 	// For https:// URLs, wsURL should be wss://
@@ -239,7 +240,7 @@ func TestManager_SessionDialParams(t *testing.T) {
 }
 
 func TestBuildWebSocketURL(t *testing.T) {
-	wsURL, origin, err := buildWebSocketURL("https://example.com", "tunnel-123")
+	wsURL, origin, err := buildWebSocketURL("https://example.com", "tunnel-123", "")
 	require.NoError(t, err, "buildWebSocketURL() unexpected error: %v")
 	if !strings.HasPrefix(wsURL, "wss://example.com/ws") {
 		t.Errorf("wsURL = %q, want prefix wss://example.com/ws", wsURL)
@@ -250,4 +251,20 @@ func TestBuildWebSocketURL(t *testing.T) {
 	if origin != "https://example.com" {
 		t.Errorf("origin = %q, want https://example.com", origin)
 	}
+}
+
+func TestBuildWebSocketURL_WithAuthToken(t *testing.T) {
+	wsURL, origin, err := buildWebSocketURL("https://example.com", "tunnel-123", "token with spaces/+")
+	require.NoError(t, err, "buildWebSocketURL() unexpected error: %v")
+
+	u, err := url.Parse(wsURL)
+	require.NoError(t, err, "parse wsURL: %v", err)
+	require.Equal(t, "wss", u.Scheme)
+	require.Equal(t, "example.com", u.Host)
+	require.Equal(t, "/ws", u.Path)
+	require.Equal(t, "data", u.Query().Get("mode"))
+	require.Equal(t, "tunnel-123", u.Query().Get("tunnel_id"))
+	require.Equal(t, "token with spaces/+", u.Query().Get("auth"))
+	require.Contains(t, wsURL, "auth=")
+	require.Equal(t, "https://example.com", origin)
 }

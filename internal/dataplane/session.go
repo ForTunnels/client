@@ -24,8 +24,8 @@ type Client struct {
 	done       chan struct{}
 }
 
-func NewWSSmuxClient(serverURL, tunnelID string, settings config.RuntimeSettings) (*Client, error) {
-	wsURL, _, err := buildWebSocketURL(serverURL, tunnelID)
+func NewWSSmuxClient(serverURL, tunnelID string, settings config.RuntimeSettings, dpAuthToken string) (*Client, error) {
+	wsURL, _, err := buildWebSocketURL(serverURL, tunnelID, dpAuthToken)
 	if err != nil {
 		return nil, err
 	}
@@ -87,8 +87,8 @@ func (c *Client) Conn() *websocket.Conn { return c.conn }
 
 // createDataPlaneSession creates a WebSocket connection and smux session for data plane operations.
 // Returns the session and a cleanup function that should be called when done.
-func CreateDataPlaneSession(serverURL, tunnelID string, settings config.RuntimeSettings) (*smux.Session, func(), error) {
-	wsURL, origin, err := buildWebSocketURL(serverURL, tunnelID)
+func CreateDataPlaneSession(serverURL, tunnelID string, settings config.RuntimeSettings, dpAuthToken string) (*smux.Session, func(), error) {
+	wsURL, origin, err := buildWebSocketURL(serverURL, tunnelID, dpAuthToken)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -139,24 +139,26 @@ func CreateDataPlaneSession(serverURL, tunnelID string, settings config.RuntimeS
 // Reconnectable session manager ensures there is a live smux session and
 // reconnects with exponential backoff on failures.
 type Manager struct {
-	serverURL string
-	tunnelID  string
-	mu        sync.Mutex
-	conn      *websocket.Conn
-	sess      *smux.Session
-	stopped   bool
-	boInit    time.Duration
-	boMax     time.Duration
-	settings  config.RuntimeSettings
+	serverURL   string
+	tunnelID    string
+	dpAuthToken string
+	mu          sync.Mutex
+	conn        *websocket.Conn
+	sess        *smux.Session
+	stopped     bool
+	boInit      time.Duration
+	boMax       time.Duration
+	settings    config.RuntimeSettings
 }
 
-func NewManager(serverURL, tunnelID string, boInit, boMax time.Duration, settings config.RuntimeSettings) *Manager {
+func NewManager(serverURL, tunnelID, dpAuthToken string, boInit, boMax time.Duration, settings config.RuntimeSettings) *Manager {
 	return &Manager{
-		serverURL: serverURL,
-		tunnelID:  tunnelID,
-		boInit:    boInit,
-		boMax:     boMax,
-		settings:  settings,
+		serverURL:   serverURL,
+		tunnelID:    tunnelID,
+		dpAuthToken: dpAuthToken,
+		boInit:      boInit,
+		boMax:       boMax,
+		settings:    settings,
 	}
 }
 
@@ -194,7 +196,7 @@ func (m *Manager) EnsureSession() (*smux.Session, error) {
 }
 
 func (m *Manager) sessionDialParams() (string, http.Header) {
-	wsURL, origin, err := buildWebSocketURL(m.serverURL, m.tunnelID)
+	wsURL, origin, err := buildWebSocketURL(m.serverURL, m.tunnelID, m.dpAuthToken)
 	if err != nil {
 		return "", http.Header{}
 	}
