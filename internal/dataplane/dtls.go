@@ -35,7 +35,8 @@ func StartDTLSDataPlaneUDP(serverURL, tunnelID, authToken, udpDst, udpListen str
 	if err != nil {
 		return err
 	}
-	conn, err := dtls.DialWithOptions("udp", uaddr,
+	conn, err := dtls.DialWithOptions(
+		"udp", uaddr,
 		dtls.WithInsecureSkipVerify(false),
 		dtls.WithExtendedMasterSecret(dtls.RequireExtendedMasterSecret),
 		dtls.WithServerName(u.Hostname()),
