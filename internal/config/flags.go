@@ -178,6 +178,7 @@ func Parse() (*Config, error) {
 	if err := applySecretSources(cfg); err != nil {
 		return nil, err
 	}
+	applyConfigFileAuthtoken(cfg)
 
 	return cfg, nil
 }
@@ -399,6 +400,15 @@ func applySecretSource(source *secretSource) error {
 	}
 	*source.value = support.GetEnvTrimmed(source.envVar)
 	return nil
+}
+
+func applyConfigFileAuthtoken(cfg *Config) {
+	if cfg == nil || strings.TrimSpace(cfg.Token) != "" {
+		return
+	}
+	if tok := AuthtokenFromFile(); tok != "" {
+		cfg.Token = tok
+	}
 }
 
 func validatePositionalArgs(args []string) error {
