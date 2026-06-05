@@ -27,6 +27,47 @@ const (
 	ReasonUnknown            = "unknown"
 )
 
+type LimitIndicatorState string
+
+const (
+	LimitIndicatorStateLimited     LimitIndicatorState = "limited"
+	LimitIndicatorStateUnlimited   LimitIndicatorState = "unlimited"
+	LimitIndicatorStateUnavailable LimitIndicatorState = "unavailable"
+	LimitIndicatorStateZeroLimit   LimitIndicatorState = "zero_limit"
+	LimitIndicatorStateExhausted   LimitIndicatorState = "exhausted"
+	LimitIndicatorStateExpired     LimitIndicatorState = "expired"
+)
+
+type LimitIndicators struct {
+	AsOf     time.Time              `json:"as_of"`
+	Lifetime LifetimeLimitIndicator `json:"lifetime"`
+	Traffic  TrafficLimitIndicator  `json:"traffic"`
+	HTTPRPM  HTTPRPMLimitIndicator  `json:"http_rpm"`
+}
+
+type LifetimeLimitIndicator struct {
+	State            LimitIndicatorState `json:"state"`
+	UsedSeconds      *int64              `json:"used_seconds"`
+	RemainingSeconds *int64              `json:"remaining_seconds"`
+	TotalSeconds     *int64              `json:"total_seconds"`
+	ResetAt          *time.Time          `json:"reset_at"`
+}
+
+type TrafficLimitIndicator struct {
+	State          LimitIndicatorState `json:"state"`
+	UsedBytes      *int64              `json:"used_bytes"`
+	RemainingBytes *int64              `json:"remaining_bytes"`
+	TotalBytes     *int64              `json:"total_bytes"`
+}
+
+type HTTPRPMLimitIndicator struct {
+	State             LimitIndicatorState `json:"state"`
+	UsedRequests      *int64              `json:"used_requests"`
+	RemainingRequests *int64              `json:"remaining_requests"`
+	TotalRequests     *int64              `json:"total_requests"`
+	ResetAt           *time.Time          `json:"reset_at"`
+}
+
 const (
 	MessageTypeCreateTunnel  = "create_tunnel"
 	MessageTypeTunnelCreated = "tunnel_created"
@@ -77,13 +118,14 @@ type Tunnel struct {
 	TLSInsecureSkipVerify bool      `json:"tls_insecure_skip_verify,omitempty"`
 	TLSServerName         string    `json:"tls_server_name,omitempty"`
 	// DisableSPAShim skips path-ingress JS shim when true (tunnel-aware HTTP apps on path URLs).
-	DisableSPAShim    bool      `json:"disable_spa_shim,omitempty"`
-	Reachable         bool      `json:"reachable"`
-	ReachCheckAt      time.Time `json:"reach_check_at"`
-	BytesUsed         int64     `json:"bytes_used"`
-	ExpiresAt         time.Time `json:"expires_at"`
-	TrafficLimitBytes int64     `json:"traffic_limit_bytes"`
-	IsGuest           bool      `json:"is_guest,omitempty"`
+	DisableSPAShim    bool             `json:"disable_spa_shim,omitempty"`
+	Reachable         bool             `json:"reachable"`
+	ReachCheckAt      time.Time        `json:"reach_check_at"`
+	BytesUsed         int64            `json:"bytes_used"`
+	ExpiresAt         time.Time        `json:"expires_at"`
+	TrafficLimitBytes int64            `json:"traffic_limit_bytes"`
+	IsGuest           bool             `json:"is_guest,omitempty"`
+	LimitIndicators   *LimitIndicators `json:"limit_indicators,omitempty"`
 }
 
 type TunnelCreateRequest struct {
