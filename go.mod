@@ -2,10 +2,12 @@ module github.com/fortunnels/client
 
 go 1.25.7
 
+toolchain go1.26.4
+
 require (
 	github.com/gorilla/websocket v1.5.3
-	github.com/pion/dtls/v3 v3.1.2
-	github.com/quic-go/quic-go v0.59.0
+	github.com/pion/dtls/v3 v3.1.3
+	github.com/quic-go/quic-go v0.59.1
 	github.com/stretchr/testify v1.11.1
 	github.com/xtaci/smux v1.5.57
 	golang.org/x/crypto v0.52.0
@@ -16,7 +18,7 @@ require (
 	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/pion/logging v0.2.4 // indirect
-	github.com/pion/transport/v4 v4.0.1 // indirect
+	github.com/pion/transport/v4 v4.0.2 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	golang.org/x/net v0.55.0 // indirect
