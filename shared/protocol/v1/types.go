@@ -39,10 +39,11 @@ const (
 )
 
 type LimitIndicators struct {
-	AsOf     time.Time              `json:"as_of"`
-	Lifetime LifetimeLimitIndicator `json:"lifetime"`
-	Traffic  TrafficLimitIndicator  `json:"traffic"`
-	HTTPRPM  HTTPRPMLimitIndicator  `json:"http_rpm"`
+	AsOf          time.Time                   `json:"as_of"`
+	Lifetime      LifetimeLimitIndicator      `json:"lifetime"`
+	Traffic       TrafficLimitIndicator       `json:"traffic"`
+	MonthlyEgress MonthlyEgressLimitIndicator `json:"monthly_egress"`
+	HTTPRPM       HTTPRPMLimitIndicator       `json:"http_rpm"`
 }
 
 type LifetimeLimitIndicator struct {
@@ -58,6 +59,14 @@ type TrafficLimitIndicator struct {
 	UsedBytes      *int64              `json:"used_bytes"`
 	RemainingBytes *int64              `json:"remaining_bytes"`
 	TotalBytes     *int64              `json:"total_bytes"`
+}
+
+type MonthlyEgressLimitIndicator struct {
+	State          LimitIndicatorState `json:"state"`
+	UsedBytes      *int64              `json:"used_bytes"`
+	RemainingBytes *int64              `json:"remaining_bytes"`
+	TotalBytes     *int64              `json:"total_bytes"`
+	ResetAt        *time.Time          `json:"reset_at"`
 }
 
 type HTTPRPMLimitIndicator struct {
