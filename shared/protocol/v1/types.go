@@ -134,6 +134,7 @@ type Tunnel struct {
 	ExpiresAt         time.Time        `json:"expires_at"`
 	TrafficLimitBytes int64            `json:"traffic_limit_bytes"`
 	IsGuest           bool             `json:"is_guest,omitempty"`
+	IsPublic          bool             `json:"is_public"`
 	LimitIndicators   *LimitIndicators `json:"limit_indicators,omitempty"`
 }
 
@@ -145,6 +146,7 @@ type TunnelCreateRequest struct {
 	TLSInsecureSkipVerify *bool  `json:"tls_insecure_skip_verify,omitempty"`
 	TLSServerName         string `json:"tls_server_name,omitempty"`
 	DisableSPAShim        *bool  `json:"disable_spa_shim,omitempty"`
+	IsPublic              *bool  `json:"is_public,omitempty"`
 }
 
 type TunnelPatchRequest struct {
@@ -155,6 +157,7 @@ type TunnelPatchRequest struct {
 	DisableSPAShim        *bool  `json:"disable_spa_shim,omitempty"`
 	TLSInsecureSkipVerify *bool  `json:"tls_insecure_skip_verify,omitempty"`
 	TLSServerName         string `json:"tls_server_name,omitempty"`
+	IsPublic              *bool  `json:"is_public,omitempty"`
 }
 
 // TunnelListResponse is returned for tunnel list and existence checks.
