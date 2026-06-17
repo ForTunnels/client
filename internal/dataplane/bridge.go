@@ -31,6 +31,7 @@ func PipeStreams(a net.Conn, b io.ReadWriteCloser) {
 	startBufferedCopy(a, b, bufB, "b->a", done)
 	startBufferedCopy(b, a, bufA, "a->b", done)
 	<-done
+	<-done
 }
 
 func startBufferedCopy(dst io.Writer, src io.Reader, buf []byte, label string, done chan<- struct{}) {

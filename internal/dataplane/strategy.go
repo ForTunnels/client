@@ -45,7 +45,7 @@ func NewStrategy(
 			"🔌 UDP QUIC tunnel running. Press Ctrl+C to stop.",
 			"udp quic mode error",
 			func() error {
-				return StartQUICDataPlaneUDP(serverURL, tunnelID, authToken, dst, listen)
+				return StartQUICDataPlaneUDP(serverURL, runtime.QUICPortString(), tunnelID, authToken, dst, listen)
 			},
 		)
 	case "dtls":
@@ -54,7 +54,7 @@ func NewStrategy(
 			"🔌 UDP DTLS tunnel running. Press Ctrl+C to stop.",
 			"udp dtls mode error",
 			func() error {
-				return StartDTLSDataPlaneUDP(serverURL, tunnelID, authToken, dst, listen)
+				return StartDTLSDataPlaneUDP(serverURL, runtime.DTLSPortString(), tunnelID, authToken, dst, listen)
 			},
 		)
 	default:

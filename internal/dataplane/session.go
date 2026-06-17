@@ -14,7 +14,6 @@ import (
 	"github.com/xtaci/smux"
 
 	"github.com/fortunnels/client/internal/config"
-	"github.com/fortunnels/client/shared/wsconn"
 )
 
 type Client struct {
@@ -22,6 +21,7 @@ type Client struct {
 	sess       *smux.Session
 	pingTicker *time.Ticker
 	done       chan struct{}
+	closeOnce  sync.Once
 }
 
 func NewWSSmuxClient(serverURL, tunnelID string, settings config.RuntimeSettings, dpAuthToken string) (*Client, error) {
@@ -37,23 +37,11 @@ func NewWSSmuxClient(serverURL, tunnelID string, settings config.RuntimeSettings
 		return nil, fmt.Errorf("ws dial: %w", err)
 	}
 
-	if rdErr := conn.SetReadDeadline(time.Now().Add(wsReadTimeout)); rdErr == nil {
-		conn.SetPongHandler(func(string) error {
-			//nolint:errcheck // pong handler best-effort deadline refresh
-			_ = conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
-			return nil
-		})
-	}
-
 	done := make(chan struct{})
 	pingTicker := time.NewTicker(settings.PingInterval)
-	startPingLoop(done, conn, pingTicker, settings.PingTimeout)
+	StartPingLoop(done, conn, pingTicker, settings.PingTimeout)
 
-	cfg := smux.DefaultConfig()
-	cfg.KeepAliveInterval = settings.SmuxKeepAliveInterval
-	cfg.KeepAliveTimeout = settings.SmuxKeepAliveTimeout
-
-	sess, err := smux.Client(wsconn.NewWSConn(conn), cfg)
+	sess, err := setupWSSmuxSession(conn, settings)
 	if err != nil {
 		pingTicker.Stop()
 		close(done)
@@ -73,10 +61,24 @@ func (c *Client) Close() {
 	if c == nil {
 		return
 	}
-	c.pingTicker.Stop()
-	close(c.done)
-	_ = c.sess.Close()
-	c.conn.Close()
+	c.closeOnce.Do(func() {
+		if c.pingTicker != nil {
+			c.pingTicker.Stop()
+		}
+		if c.done != nil {
+			close(c.done)
+		}
+		if c.sess != nil {
+			_ = c.sess.Close()
+		}
+		if c.conn != nil {
+			c.conn.Close()
+		}
+		c.pingTicker = nil
+		c.done = nil
+		c.sess = nil
+		c.conn = nil
+	})
 }
 
 // Session exposes the underlying smux session.
@@ -102,23 +104,11 @@ func CreateDataPlaneSession(serverURL, tunnelID string, settings config.RuntimeS
 		return nil, nil, fmt.Errorf("ws dial: %w", err)
 	}
 
-	// WS keepalive
-	//nolint:errcheck // best-effort read deadline
-	_ = conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
-	conn.SetPongHandler(func(string) error {
-		//nolint:errcheck // pong handler best-effort deadline refresh
-		_ = conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
-		return nil
-	})
 	pingDone := make(chan struct{})
 	pingTicker := time.NewTicker(settings.PingInterval)
-	startPingLoop(pingDone, conn, pingTicker, settings.PingTimeout)
+	StartPingLoop(pingDone, conn, pingTicker, settings.PingTimeout)
 
-	cfg := smux.DefaultConfig()
-	cfg.KeepAliveInterval = settings.SmuxKeepAliveInterval
-	cfg.KeepAliveTimeout = settings.SmuxKeepAliveTimeout
-
-	sess, err := smux.Client(wsconn.NewWSConn(conn), cfg)
+	sess, err := setupWSSmuxSession(conn, settings)
 	if err != nil {
 		pingTicker.Stop()
 		close(pingDone)
@@ -166,20 +156,24 @@ func NewManager(serverURL, tunnelID, dpAuthToken string, boInit, boMax time.Dura
 
 func (m *Manager) EnsureSession() (*smux.Session, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	if m.stopped {
+		m.mu.Unlock()
 		return nil, errors.New("stopped")
 	}
 	if m.sess != nil && !m.sess.IsClosed() {
-		return m.sess, nil
+		sess := m.sess
+		m.mu.Unlock()
+		return sess, nil
 	}
 	wsURL, headers := m.sessionDialParams()
 	if wsURL == "" {
+		m.mu.Unlock()
 		return nil, errors.New("invalid websocket url")
 	}
 	backoff := m.boInit
 	for {
 		if m.stopped {
+			m.mu.Unlock()
 			return nil, errors.New("stopped")
 		}
 		conn, resp, err := websocket.DefaultDialer.Dial(wsURL, headers)
@@ -189,20 +183,27 @@ func (m *Manager) EnsureSession() (*smux.Session, error) {
 		if err == nil {
 			sess, initErr := m.initializeSession(conn)
 			if initErr == nil {
+				m.mu.Unlock()
 				return sess, nil
 			}
 		}
-		m.mu.Unlock()
-		time.Sleep(backoff)
-		m.mu.Lock()
-		if m.stopped {
-			return nil, errors.New("stopped")
-		}
-		if m.sess != nil && !m.sess.IsClosed() {
-			return m.sess, nil
-		}
+		wait := backoff
 		backoff = nextBackoff(backoff, m.boMax)
+		m.mu.Unlock()
+		sleepReconnectBackoff(m.isStopped, wait)
+		m.mu.Lock()
+		if m.sess != nil && !m.sess.IsClosed() {
+			sess := m.sess
+			m.mu.Unlock()
+			return sess, nil
+		}
 	}
+}
+
+func (m *Manager) isStopped() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.stopped
 }
 
 func (m *Manager) sessionDialParams() (string, http.Header) {
@@ -216,19 +217,7 @@ func (m *Manager) sessionDialParams() (string, http.Header) {
 }
 
 func (m *Manager) initializeSession(conn *websocket.Conn) (*smux.Session, error) {
-	//nolint:errcheck // best-effort read deadline
-	_ = conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
-	conn.SetPongHandler(func(string) error {
-		//nolint:errcheck // pong handler best-effort deadline refresh
-		_ = conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
-		return nil
-	})
-
-	cfg := smux.DefaultConfig()
-	cfg.KeepAliveInterval = m.settings.SmuxKeepAliveInterval
-	cfg.KeepAliveTimeout = m.settings.SmuxKeepAliveTimeout
-
-	sess, err := smux.Client(wsconn.NewWSConn(conn), cfg)
+	sess, err := setupWSSmuxSession(conn, m.settings)
 	if err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("smux client: %w", err)
@@ -244,7 +233,7 @@ func (m *Manager) initializeSession(conn *websocket.Conn) (*smux.Session, error)
 	}
 	m.pingDone = make(chan struct{})
 	m.pingTicker = time.NewTicker(m.settings.PingInterval)
-	startPingLoop(m.pingDone, conn, m.pingTicker, m.settings.PingTimeout)
+	StartPingLoop(m.pingDone, conn, m.pingTicker, m.settings.PingTimeout)
 	return sess, nil
 }
 
@@ -276,24 +265,4 @@ func (m *Manager) Close() {
 	}
 	m.sess = nil
 	m.conn = nil
-}
-
-func startPingLoop(
-	done <-chan struct{},
-	conn *websocket.Conn,
-	ticker *time.Ticker,
-	pingTimeout time.Duration,
-) {
-	go func() {
-		for {
-			select {
-			case <-ticker.C:
-				deadline := time.Now().Add(pingTimeout)
-				//nolint:errcheck // best-effort ping
-				_ = conn.WriteControl(websocket.PingMessage, nil, deadline)
-			case <-done:
-				return
-			}
-		}
-	}()
 }

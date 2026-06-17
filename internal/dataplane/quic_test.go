@@ -5,7 +5,9 @@ package dataplane
 
 import (
 	"context"
+	"fmt"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -13,7 +15,7 @@ import (
 )
 
 func TestDialQUICConnectionInvalidURL(t *testing.T) {
-	if _, err := dialQUICConnection("://bad", "4433", false); err == nil {
+	if _, err := dialQUICConnection("://bad", "8443", false); err == nil {
 		t.Fatalf("dialQUICConnection() expected error for invalid URL")
 	}
 }
@@ -26,7 +28,7 @@ func TestForwardUDPPacketsOverQUIC_ContextCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- forwardUDPPacketsOverQUIC(ctx, cancel, nil, uc, "t1", "auth", "127.0.0.1:53", map[string]*net.UDPAddr{})
+		done <- forwardUDPPacketsOverQUIC(ctx, cancel, nil, uc, "t1", "auth", "127.0.0.1:53", newFlowRegistry())
 	}()
 
 	time.Sleep(20 * time.Millisecond)
@@ -38,6 +40,22 @@ func TestForwardUDPPacketsOverQUIC_ContextCancel(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("forward loop did not exit after context cancel")
 	}
+}
+
+func TestFlowRegistry_ConcurrentAccess(t *testing.T) {
+	reg := newFlowRegistry()
+	addr := &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 5353}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			flowID := fmt.Sprintf("flow-%d", id)
+			reg.set(flowID, addr)
+			_, _ = reg.get(flowID)
+		}(i)
+	}
+	wg.Wait()
 }
 
 func listenTestUDP(addr string) (*net.UDPConn, error) {

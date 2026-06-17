@@ -13,7 +13,7 @@ import (
 )
 
 // startDTLSDataPlaneUDP listens on udpListen and forwards via DTLS to server
-func StartDTLSDataPlaneUDP(serverURL, tunnelID, authToken, udpDst, udpListen string) error {
+func StartDTLSDataPlaneUDP(serverURL, dtlsPort, tunnelID, authToken, udpDst, udpListen string) error {
 	// local UDP listen
 	laddr, err := net.ResolveUDPAddr("udp", udpListen)
 	if err != nil {
@@ -29,7 +29,7 @@ func StartDTLSDataPlaneUDP(serverURL, tunnelID, authToken, udpDst, udpListen str
 	if err != nil {
 		return err
 	}
-	host := net.JoinHostPort(u.Hostname(), "4444")
+	host := net.JoinHostPort(u.Hostname(), dtlsPort)
 	// DTLS dial with proper certificate validation
 	uaddr, err := net.ResolveUDPAddr("udp", host)
 	if err != nil {

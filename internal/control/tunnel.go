@@ -16,6 +16,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	protocolv1 "github.com/fortunnels/client/shared/protocol/v1"
 )
@@ -80,7 +81,7 @@ func CreateTunnelWithClient(
 		// Try to read error message from response body
 		//nolint:errcheck // best-effort read of error body
 		bodyBytes, _ := io.ReadAll(resp.Body)
-		bodyStr := strings.TrimSpace(string(bodyBytes))
+		bodyStr := truncateErrorBody(strings.TrimSpace(string(bodyBytes)))
 		if bodyStr != "" {
 			return nil, fmt.Errorf("server returned status %d: %s", resp.StatusCode, bodyStr)
 		}
@@ -93,6 +94,19 @@ func CreateTunnelWithClient(
 	}
 
 	return &tunnel, nil
+}
+
+const maxTunnelErrorBodyRunes = 200
+
+func truncateErrorBody(body string) string {
+	if body == "" {
+		return ""
+	}
+	if utf8.RuneCountInString(body) <= maxTunnelErrorBodyRunes {
+		return body
+	}
+	runes := []rune(body)
+	return string(runes[:maxTunnelErrorBodyRunes]) + "..."
 }
 
 // rewriteIngressPublicURL replaces loopback hosts in tcp:// and udp:// URLs with the API server's

@@ -19,6 +19,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/fortunnels/client/internal/config"
+	"github.com/fortunnels/client/internal/dataplane"
 )
 
 var debugLogging = strings.Contains(
@@ -79,9 +80,7 @@ func ConnectWebSocketWithAuth(httpClient *http.Client, serverURL, tunnelID, bear
 // or session-cookie client for fallback tunnel polling. httpClient may be nil; when
 // provided with a cookie jar (session auth), fallback HTTP polls use it for auth.
 func (w *Watcher) ConnectWebSocketWithAuth(httpClient *http.Client, serverURL, tunnelID, bearer string, runtime config.RuntimeSettings) {
-	wsURL := "ws" + serverURL[4:] + "/ws?watch=" + tunnelID
-
-	conn, resp, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	conn, resp, err := dialControlWebSocket(httpClient, serverURL, tunnelID, bearer)
 	if resp != nil && resp.Body != nil {
 		defer resp.Body.Close()
 	}
@@ -106,7 +105,7 @@ func (w *Watcher) ConnectWebSocketWithAuth(httpClient *http.Client, serverURL, t
 	w.startFallbackTunnelWatcherWithAuth(httpClient, serverURL, tunnelID, bearer, time.Second, intervalCh, done, &doneOnce)
 	w.startControlMessageReader(conn, ackCh, intervalCh, done, &doneOnce, runtime.WatchInterval)
 
-	runPingLoop(conn, ticker, runtime.PingTimeout, done, &doneOnce)
+	dataplane.StartControlPingLoop(done, &doneOnce, conn, ticker, runtime.PingTimeout)
 }
 
 func runPingLoop(
@@ -116,19 +115,7 @@ func runPingLoop(
 	done chan struct{},
 	doneOnce *sync.Once,
 ) {
-	for {
-		select {
-		case <-ticker.C:
-			deadline := time.Now().Add(pingTimeout)
-			if err := conn.WriteControl(websocket.PingMessage, nil, deadline); err != nil {
-				log.Printf("WebSocket ping loop ending: %v", err)
-				doneOnce.Do(func() { close(done) })
-				return
-			}
-		case <-done:
-			return
-		}
-	}
+	dataplane.StartControlPingLoop(done, doneOnce, conn, ticker, pingTimeout)
 }
 
 func (w *Watcher) warnOnMissingAck(ackCh <-chan struct{}) {
