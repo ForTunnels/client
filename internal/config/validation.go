@@ -14,17 +14,25 @@ import (
 	"github.com/fortunnels/client/internal/support"
 )
 
-// Validate ensures CLI configuration is consistent. It exits the process on fatal errors.
-func Validate(cfg *Config) {
-	validateProtocolFlag(cfg.Protocol)
-	validateServerURLFlag(cfg.ServerURL, cfg.ServerFlagProvided, cfg.AllowInsecureHTTP)
-	validateTargetAddressIfNeeded(cfg)
-	enforceEncryptionRequirements(cfg)
+// Validate ensures CLI configuration is consistent.
+func Validate(cfg *Config) error {
+	if err := validateProtocolFlag(cfg.Protocol); err != nil {
+		return err
+	}
+	if err := validateServerURLFlag(cfg.ServerURL, cfg.ServerFlagProvided, cfg.AllowInsecureHTTP); err != nil {
+		return err
+	}
+	if err := validateTargetAddressIfNeeded(cfg); err != nil {
+		return err
+	}
+	if err := enforceEncryptionRequirements(cfg); err != nil {
+		return err
+	}
 	if err := validateLoginPasswordPair(cfg); err != nil {
-		fmt.Println("❌", err.Error())
-		os.Exit(2)
+		return err
 	}
 	warnOnSensitiveFlagUsage(cfg)
+	return nil
 }
 
 // validateLoginPasswordPair returns an error if --login is provided without a password.
@@ -42,80 +50,65 @@ func validateLoginPasswordPair(cfg *Config) error {
 	return fmt.Errorf("when using --login, provide password via --pass, --pass-file, --pass-stdin, or FORTUNNELS_PASSWORD")
 }
 
-func validateProtocolFlag(protocol string) {
+func validateProtocolFlag(protocol string) error {
 	switch strings.ToLower(protocol) {
 	case protoHTTP, protoHTTPS, protoTCP, protoUDP:
+		return nil
 	default:
-		fmt.Printf("❌ unsupported protocol: %s\n", protocol)
-		fmt.Println("   Supported: http, https, tcp, udp")
-		os.Exit(2)
+		return fmt.Errorf("unsupported protocol: %s\n   Supported: http, https, tcp, udp", protocol)
 	}
 }
 
-func validateServerURLFlag(serverURL string, serverFlagProvided, allowInsecureHTTP bool) {
+func validateServerURLFlag(serverURL string, serverFlagProvided, allowInsecureHTTP bool) error {
 	if serverFlagProvided &&
 		!strings.HasPrefix(serverURL, "http://") &&
 		!strings.HasPrefix(serverURL, "https://") {
-		fmt.Println("❌ missing protocol in --server (use http:// or https://)")
-		fmt.Println("   Example: --server http://127.0.0.1:8080")
-		os.Exit(2)
+		return fmt.Errorf("missing protocol in --server (use http:// or https://)\n   Example: --server http://127.0.0.1:8080")
 	}
 	u, err := url.Parse(serverURL)
 	if err != nil || u.Scheme == "" || u.Host == "" {
-		fmt.Println("❌ invalid server URL")
-		fmt.Println("   Try: --server http://127.0.0.1:8080")
-		os.Exit(2)
+		return fmt.Errorf("invalid server URL\n   Try: --server http://127.0.0.1:8080")
 	}
 	if strings.EqualFold(u.Scheme, "http") && !allowInsecureHTTP && !isLocalServerHost(u.Host) {
-		fmt.Println("❌ insecure HTTP server URL is blocked")
-		fmt.Println("   Use https:// or pass --allow-insecure-http for non-local HTTP")
-		os.Exit(2)
+		return fmt.Errorf("insecure HTTP server URL is blocked\n   Use https:// or pass --allow-insecure-http for non-local HTTP")
 	}
+	return nil
 }
 
-func validateTargetAddressIfNeeded(cfg *Config) {
+func validateTargetAddressIfNeeded(cfg *Config) error {
 	if cfg.Protocol != protoHTTP && cfg.Protocol != protoHTTPS && cfg.Protocol != protoTCP {
-		return
+		return nil
 	}
-	validateTargetAddress(cfg.TargetAddr)
+	return validateTargetAddress(cfg.TargetAddr)
 }
 
-func validateTargetAddress(addr string) {
+func validateTargetAddress(addr string) error {
 	if addr == "" || !support.LooksLikeHostPort(addr) {
-		fmt.Println("❌ invalid target address")
-		fmt.Println("   Expected format host:port, e.g. 127.0.0.1:8000")
-		fmt.Println("   Make sure the address is correct and reachable")
-		os.Exit(2)
+		return fmt.Errorf("invalid target address\n   Expected format host:port, e.g. 127.0.0.1:8000\n   Make sure the address is correct and reachable")
 	}
 	host, portStr, err := net.SplitHostPort(addr)
 	_ = host
 	if err != nil {
-		fmt.Println("❌ invalid target address")
-		fmt.Println("   Example: 127.0.0.1:8000")
-		os.Exit(2)
+		return fmt.Errorf("invalid target address\n   Example: 127.0.0.1:8000")
 	}
 	if pnum, e := strconv.Atoi(portStr); e != nil || pnum <= 0 || pnum > 65535 {
-		fmt.Println("❌ invalid port")
-		fmt.Println("   Valid range: 1-65535")
-		os.Exit(2)
+		return fmt.Errorf("invalid port\n   Valid range: 1-65535")
 	}
+	return nil
 }
 
-func enforceEncryptionRequirements(cfg *Config) {
+func enforceEncryptionRequirements(cfg *Config) error {
 	if !cfg.Encrypt {
-		return
+		return nil
 	}
 	psk := strings.TrimSpace(cfg.PSK)
 	if psk == "" {
-		fmt.Println("❌ empty PSK")
-		fmt.Println("   Provide a non-empty --psk when using --encrypt")
-		os.Exit(2)
+		return fmt.Errorf("empty PSK\n   Provide a non-empty --psk when using --encrypt")
 	}
 	if len(psk) < 32 {
-		fmt.Println("❌ PSK is too short")
-		fmt.Println("   Use at least 32 characters for --psk")
-		os.Exit(2)
+		return fmt.Errorf("PSK is too short\n   Use at least 32 characters for --psk")
 	}
+	return nil
 }
 
 func isLocalServerHost(host string) bool {

@@ -64,7 +64,9 @@ func (c *ClientAEAD) Read(p []byte) (int, error) {
 }
 
 func (c *ClientAEAD) Write(p []byte) (int, error) {
-	// XChaCha20-Poly1305 requires 24-byte nonce; put counter in last 8 bytes
+	// XChaCha20-Poly1305 requires a 24-byte nonce. We use a zero prefix plus a
+	// monotonic 8-byte counter in the tail. This is safe because each ClientAEAD
+	// instance is unidirectional (separate encrypt/decrypt streams).
 	nonce := make([]byte, 24)
 	binary.BigEndian.PutUint64(nonce[16:], c.encCtr)
 	c.encCtr++

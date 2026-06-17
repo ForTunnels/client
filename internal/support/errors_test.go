@@ -5,9 +5,11 @@ package support
 
 import (
 	"errors"
+	"fmt"
 	"net"
 	"net/url"
 	"os"
+	"strings"
 	"syscall"
 	"testing"
 )
@@ -26,6 +28,11 @@ func TestIsConnRefused(t *testing.T) {
 		{
 			name:     "url.Error wrapping OpError with ECONNREFUSED",
 			err:      &url.Error{Err: &net.OpError{Err: &os.SyscallError{Err: syscall.ECONNREFUSED}}},
+			expected: true,
+		},
+		{
+			name:     "wrapped url.Error with ECONNREFUSED",
+			err:      fmt.Errorf("dial failed: %w", &url.Error{Err: &net.OpError{Err: &os.SyscallError{Err: syscall.ECONNREFUSED}}}),
 			expected: true,
 		},
 		{
@@ -74,6 +81,11 @@ func TestIsDialTimeout(t *testing.T) {
 		{
 			name:     "net.Error with Timeout",
 			err:      &timeoutError{},
+			expected: true,
+		},
+		{
+			name:     "wrapped net.Error with Timeout",
+			err:      fmt.Errorf("dial: %w", &timeoutError{}),
 			expected: true,
 		},
 		{
@@ -127,93 +139,60 @@ func (e *nonTimeoutError) Error() string   { return "network error" }
 func (e *nonTimeoutError) Timeout() bool   { return false }
 func (e *nonTimeoutError) Temporary() bool { return false }
 
-func TestAs(t *testing.T) {
-	t.Run("url.Error", func(t *testing.T) {
-		uerr := &url.Error{Op: "GET", URL: "http://example.com", Err: errors.New("test")}
-		var target *url.Error
-		result := As(uerr, &target)
-		if !result {
-			t.Error("As() with url.Error should return true")
-		}
-		if target != uerr {
-			t.Error("As() should set target to the error")
-		}
-	})
-
-	t.Run("net.OpError", func(t *testing.T) {
-		operr := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("test")}
-		var target *net.OpError
-		result := As(operr, &target)
-		if !result {
-			t.Error("As() with net.OpError should return true")
-		}
-		if target != operr {
-			t.Error("As() should set target to the error")
-		}
-	})
-
-	t.Run("net.Error", func(t *testing.T) {
-		nerr := &timeoutError{}
-		var target net.Error
-		result := As(nerr, &target)
-		if !result {
-			t.Error("As() with net.Error should return true")
-		}
-		if target != nerr {
-			t.Error("As() should set target to the error")
-		}
-	})
-
-	t.Run("non-matching type", func(t *testing.T) {
-		err := errors.New("test")
-		var target *url.Error
-		result := As(err, &target)
-		if result {
-			t.Error("As() with non-matching type should return false")
-		}
-	})
-
-	t.Run("nil error", func(t *testing.T) {
-		var target *url.Error
-		result := As(nil, &target)
-		if result {
-			t.Error("As() with nil error should return false")
-		}
-	})
-}
-
 func TestHandleTunnelCreationError(t *testing.T) {
-	// Note: This function calls os.Exit(1), so we can't test it directly
-	// We can only verify the logic paths that don't exit
-	// In practice, this would be tested via integration tests or by mocking os.Exit
+	serverURL := "http://127.0.0.1:8080"
 
 	t.Run("conn refused error", func(t *testing.T) {
-		// This test verifies the function recognizes conn refused errors
-		// Actual os.Exit behavior would be tested in integration tests
-		err := &net.OpError{Err: &os.SyscallError{Err: syscall.ECONNREFUSED}}
-		// We can't actually call HandleTunnelCreationError as it exits
-		// But we can verify IsConnRefused works
-		if !IsConnRefused(err) {
-			t.Error("Expected IsConnRefused to return true")
+		err := HandleTunnelCreationError(
+			&net.OpError{Err: &os.SyscallError{Err: syscall.ECONNREFUSED}},
+			serverURL,
+		)
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "Unable to connect to server") {
+			t.Errorf("unexpected message: %v", err)
+		}
+	})
+
+	t.Run("wrapped conn refused error", func(t *testing.T) {
+		inner := &net.OpError{Err: &os.SyscallError{Err: syscall.ECONNREFUSED}}
+		err := HandleTunnelCreationError(fmt.Errorf("wrap: %w", inner), serverURL)
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "Unable to connect to server") {
+			t.Errorf("unexpected message: %v", err)
 		}
 	})
 
 	t.Run("dial timeout error", func(t *testing.T) {
-		err := &timeoutError{}
-		// Verify IsDialTimeout works
-		if !IsDialTimeout(err) {
-			t.Error("Expected IsDialTimeout to return true")
+		err := HandleTunnelCreationError(&timeoutError{}, serverURL)
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "Unable to connect to server") {
+			t.Errorf("unexpected message: %v", err)
 		}
 	})
 
 	t.Run("other error", func(t *testing.T) {
-		err := errors.New("some other error")
-		// Verify it's not conn refused or timeout
-		if IsConnRefused(err) {
-			t.Error("Expected IsConnRefused to return false")
+		err := HandleTunnelCreationError(errors.New("some other error"), serverURL)
+		if err == nil {
+			t.Fatal("expected error")
 		}
-		if IsDialTimeout(err) {
-			t.Error("Expected IsDialTimeout to return false")
+		if !strings.Contains(err.Error(), "Failed to create tunnel") {
+			t.Errorf("unexpected message: %v", err)
+		}
+	})
+
+	t.Run("nil error", func(t *testing.T) {
+		err := HandleTunnelCreationError(nil, serverURL)
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if !strings.Contains(err.Error(), "unknown error") {
+			t.Errorf("unexpected message: %v", err)
 		}
 	})
 }

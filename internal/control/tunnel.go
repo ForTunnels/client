@@ -34,9 +34,9 @@ func CreateTunnelWithClient(
 		UserID:     userID,
 	}
 	if strings.EqualFold(protocol, "https") {
-		// Автоконфигурация для localhost: разрешаем self-signed и подставляем SNI
+		// Auto-configure localhost HTTPS targets for local dev (self-signed cert, SNI).
 		if h, _, err := net.SplitHostPort(localAddr); err == nil {
-			if h == "localhost" || h == "127.0.0.1" { // локальная разработка
+			if h == "localhost" || h == "127.0.0.1" {
 				insecure := true
 				requestBody.TLSInsecureSkipVerify = &insecure
 				requestBody.TLSServerName = "localhost"

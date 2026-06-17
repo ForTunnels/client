@@ -10,9 +10,12 @@ import (
 	"log"
 	"net"
 	"net/url"
+	"time"
 
 	"github.com/quic-go/quic-go"
 )
+
+const udpReadPollInterval = time.Second
 
 // startQUICDataPlaneUDP listens on udpListen and forwards via QUIC datagrams, receiving replies
 func StartQUICDataPlaneUDP(serverURL, tunnelID, authToken, udpDst, udpListen string) error {
@@ -36,15 +39,28 @@ func StartQUICDataPlaneUDP(serverURL, tunnelID, authToken, udpDst, udpListen str
 		}
 	}()
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	flowMap := make(map[string]*net.UDPAddr)
-	startQUICDatagramReceiver(qc, uc, flowMap)
-	return forwardUDPPacketsOverQUIC(qc, uc, tunnelID, authToken, udpDst, flowMap)
+	startQUICDatagramReceiver(ctx, cancel, qc, uc, flowMap)
+	return forwardUDPPacketsOverQUIC(ctx, cancel, qc, uc, tunnelID, authToken, udpDst, flowMap)
 }
 
-func startQUICDatagramReceiver(qc *quic.Conn, uc *net.UDPConn, flowMap map[string]*net.UDPAddr) {
+func startQUICDatagramReceiver(
+	ctx context.Context,
+	cancel context.CancelFunc,
+	qc *quic.Conn,
+	uc *net.UDPConn,
+	flowMap map[string]*net.UDPAddr,
+) {
 	go func() {
+		defer cancel()
 		for {
-			b, err := qc.ReceiveDatagram(context.Background())
+			if ctx.Err() != nil {
+				return
+			}
+			b, err := qc.ReceiveDatagram(ctx)
 			if err != nil {
 				return
 			}
@@ -65,6 +81,8 @@ func startQUICDatagramReceiver(qc *quic.Conn, uc *net.UDPConn, flowMap map[strin
 }
 
 func forwardUDPPacketsOverQUIC(
+	ctx context.Context,
+	cancel context.CancelFunc,
 	qc *quic.Conn,
 	uc *net.UDPConn,
 	tunnelID, authToken, udpDst string,
@@ -72,8 +90,21 @@ func forwardUDPPacketsOverQUIC(
 ) error {
 	buf := make([]byte, udpDatagramMaxSize)
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := uc.SetReadDeadline(timeFromContext(ctx)); err != nil {
+			return err
+		}
 		n, raddr, err := uc.ReadFromUDP(buf)
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				continue
+			}
+			cancel()
 			return err
 		}
 		flowID := raddr.String()
@@ -88,12 +119,21 @@ func forwardUDPPacketsOverQUIC(
 		}
 		b, err := json.Marshal(frame)
 		if err != nil {
+			cancel()
 			return err
 		}
 		if err := qc.SendDatagram(b); err != nil {
+			cancel()
 			return err
 		}
 	}
+}
+
+func timeFromContext(ctx context.Context) time.Time {
+	if deadline, ok := ctx.Deadline(); ok {
+		return deadline
+	}
+	return time.Now().Add(udpReadPollInterval)
 }
 
 func dialQUICConnection(serverURL, port string, enableDatagrams bool) (*quic.Conn, error) {

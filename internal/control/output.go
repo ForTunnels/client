@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: PROPRIETARY
+// Copyright (c) 2026 ForTunnels
+
 package control
 
 import "fmt"
@@ -9,10 +12,5 @@ type Output interface {
 
 type StdOutput struct{}
 
-func (StdOutput) Printf(format string, args ...any) {
-	fmt.Printf(format, args...)
-}
-
-func (StdOutput) Println(args ...any) {
-	fmt.Println(args...)
-}
+func (StdOutput) Printf(format string, args ...any) { fmt.Printf(format, args...) }
+func (StdOutput) Println(args ...any)               { fmt.Println(args...) }
