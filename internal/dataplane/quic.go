@@ -18,7 +18,7 @@ import (
 const udpReadPollInterval = time.Second
 
 // startQUICDataPlaneUDP listens on udpListen and forwards via QUIC datagrams, receiving replies
-func StartQUICDataPlaneUDP(serverURL, tunnelID, authToken, udpDst, udpListen string) error {
+func StartQUICDataPlaneUDP(serverURL, quicPort, tunnelID, authToken, udpDst, udpListen string) error {
 	laddr, err := net.ResolveUDPAddr("udp", udpListen)
 	if err != nil {
 		return err
@@ -29,7 +29,7 @@ func StartQUICDataPlaneUDP(serverURL, tunnelID, authToken, udpDst, udpListen str
 	}
 	defer uc.Close()
 
-	qc, err := dialQUICConnection(serverURL, "4433", true)
+	qc, err := dialQUICConnection(serverURL, quicPort, true)
 	if err != nil {
 		return err
 	}
@@ -42,9 +42,9 @@ func StartQUICDataPlaneUDP(serverURL, tunnelID, authToken, udpDst, udpListen str
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	flowMap := make(map[string]*net.UDPAddr)
-	startQUICDatagramReceiver(ctx, cancel, qc, uc, flowMap)
-	return forwardUDPPacketsOverQUIC(ctx, cancel, qc, uc, tunnelID, authToken, udpDst, flowMap)
+	flows := newFlowRegistry()
+	startQUICDatagramReceiver(ctx, cancel, qc, uc, flows)
+	return forwardUDPPacketsOverQUIC(ctx, cancel, qc, uc, tunnelID, authToken, udpDst, flows)
 }
 
 func startQUICDatagramReceiver(
@@ -52,7 +52,7 @@ func startQUICDatagramReceiver(
 	cancel context.CancelFunc,
 	qc *quic.Conn,
 	uc *net.UDPConn,
-	flowMap map[string]*net.UDPAddr,
+	flows *flowRegistry,
 ) {
 	go func() {
 		defer cancel()
@@ -71,7 +71,7 @@ func startQUICDatagramReceiver(
 				Data     []byte `json:"data"`
 			}
 			if json.Unmarshal(b, &fr) == nil && fr.Protocol == "udp" && len(fr.Data) > 0 {
-				if ra, ok := flowMap[fr.FlowID]; ok {
+				if ra, ok := flows.get(fr.FlowID); ok {
 					//nolint:errcheck // best-effort UDP forward
 					_, _ = uc.WriteToUDP(fr.Data, ra)
 				}
@@ -86,7 +86,7 @@ func forwardUDPPacketsOverQUIC(
 	qc *quic.Conn,
 	uc *net.UDPConn,
 	tunnelID, authToken, udpDst string,
-	flowMap map[string]*net.UDPAddr,
+	flows *flowRegistry,
 ) error {
 	buf := make([]byte, udpDatagramMaxSize)
 	for {
@@ -108,7 +108,7 @@ func forwardUDPPacketsOverQUIC(
 			return err
 		}
 		flowID := raddr.String()
-		flowMap[flowID] = raddr
+		flows.set(flowID, raddr)
 		frame := map[string]interface{}{
 			"tunnel_id": tunnelID,
 			"flow_id":   flowID,

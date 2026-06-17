@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -18,6 +19,9 @@ const (
 	protoHTTPS = "https"
 	protoTCP   = "tcp"
 	protoUDP   = "udp"
+
+	defaultQUICPort = 8443
+	defaultDTLSPort = 443
 )
 
 var defaultServerURL = "https://fortunnels.ru"
@@ -64,6 +68,8 @@ type Config struct {
 	DPAuthTokenFromStdin  bool
 	DPAuthSecretFromStdin bool
 	AllowInsecureHTTP     bool
+	QUICPort              int
+	DTLSPort              int
 
 	ServerFlagProvided       bool
 	TokenFlagProvided        bool
@@ -80,6 +86,24 @@ type RuntimeSettings struct {
 	SmuxKeepAliveInterval time.Duration
 	SmuxKeepAliveTimeout  time.Duration
 	WatchInterval         time.Duration
+	QUICPort              int
+	DTLSPort              int
+}
+
+// QUICPortString returns the QUIC server port as a dial string.
+func (r RuntimeSettings) QUICPortString() string {
+	if r.QUICPort <= 0 {
+		return strconv.Itoa(defaultQUICPort)
+	}
+	return strconv.Itoa(r.QUICPort)
+}
+
+// DTLSPortString returns the DTLS server port as a dial string.
+func (r RuntimeSettings) DTLSPortString() string {
+	if r.DTLSPort <= 0 {
+		return strconv.Itoa(defaultDTLSPort)
+	}
+	return strconv.Itoa(r.DTLSPort)
 }
 
 // EncryptionSettings describes stream encryption preferences.
@@ -96,6 +120,8 @@ func (c *Config) RuntimeSettings() RuntimeSettings {
 		SmuxKeepAliveInterval: c.SmuxInterval,
 		SmuxKeepAliveTimeout:  c.SmuxTimeout,
 		WatchInterval:         c.WatchInterval,
+		QUICPort:              c.QUICPort,
+		DTLSPort:              c.DTLSPort,
 	}
 }
 
@@ -147,6 +173,8 @@ func Parse() (*Config, error) {
 	fs.StringVar(&cfg.DPAuthSecretFile, "dp-auth-secret-file", cfg.DPAuthSecretFile, "Read data-plane auth secret from file")
 	fs.BoolVar(&cfg.DPAuthTokenFromStdin, "dp-auth-token-stdin", cfg.DPAuthTokenFromStdin, "Read data-plane auth token from stdin")
 	fs.BoolVar(&cfg.DPAuthSecretFromStdin, "dp-auth-secret-stdin", cfg.DPAuthSecretFromStdin, "Read data-plane auth secret from stdin")
+	fs.IntVar(&cfg.QUICPort, "quic-port", defaultQUICPort, "Server QUIC port for UDP data-plane")
+	fs.IntVar(&cfg.DTLSPort, "dtls-port", defaultDTLSPort, "Server DTLS port for UDP data-plane")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return nil, err
@@ -179,6 +207,7 @@ func Parse() (*Config, error) {
 	if err := applySecretSources(cfg); err != nil {
 		return nil, err
 	}
+	applyTransportPortEnv(cfg)
 	applyConfigFileAuthtoken(cfg)
 
 	return cfg, nil
@@ -201,6 +230,8 @@ func defaultConfig() *Config {
 		BackoffMax:     30 * time.Second,
 		WatchInterval:  10 * time.Second,
 		PSK:            "",
+		QUICPort:       defaultQUICPort,
+		DTLSPort:       defaultDTLSPort,
 	}
 }
 
@@ -461,6 +492,22 @@ func applySecretSource(source *secretSource) error {
 	}
 	*source.value = support.GetEnvTrimmed(source.envVar)
 	return nil
+}
+
+func applyTransportPortEnv(cfg *Config) {
+	if cfg == nil {
+		return
+	}
+	if v := support.GetEnvTrimmed("FORTUNNELS_QUIC_PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 && p <= 65535 {
+			cfg.QUICPort = p
+		}
+	}
+	if v := support.GetEnvTrimmed("FORTUNNELS_DTLS_PORT"); v != "" {
+		if p, err := strconv.Atoi(v); err == nil && p > 0 && p <= 65535 {
+			cfg.DTLSPort = p
+		}
+	}
 }
 
 func applyConfigFileAuthtoken(cfg *Config) {

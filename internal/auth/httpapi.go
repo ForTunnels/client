@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -42,6 +43,9 @@ func SetupAuthentication(cfg *config.Config) (*http.Client, string, string, erro
 			return nil, "", "", err
 		}
 		csrf := csrfTokenFromJar(httpClient, cfg.ServerURL)
+		if csrf == "" {
+			log.Printf("[WARN] csrf bootstrap: csrf_token cookie not set (server may have CSRF disabled)")
+		}
 		return httpClient, "", csrf, nil
 	}
 	return nil, "", "", nil

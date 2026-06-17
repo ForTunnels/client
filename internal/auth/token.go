@@ -23,7 +23,8 @@ func ComputeDataPlaneAuth(tunnelID, dpAuthTokenFlag, dpAuthSecretFlag string) st
 }
 
 // ComputeDataPlaneAuthWithPSK is like ComputeDataPlaneAuth but falls back to psk when encrypt is true
-// and no explicit dp-auth secret/token was provided (same material as stream PSK for dev setups).
+// and no explicit dp-auth secret/token was provided. This reuses stream encryption material for
+// local dev only; production should set --dp-auth-secret separately from --psk.
 func ComputeDataPlaneAuthWithPSK(tunnelID, dpAuthTokenFlag, dpAuthSecretFlag, psk string, encrypt bool) string {
 	if strings.TrimSpace(dpAuthTokenFlag) != "" {
 		return dpAuthTokenFlag
