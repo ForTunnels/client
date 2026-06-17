@@ -4,6 +4,7 @@
 package support
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -30,13 +31,13 @@ func IsConnRefused(err error) bool {
 		return false
 	}
 	var uerr *url.Error
-	if As(err, &uerr) {
+	if errors.As(err, &uerr) {
 		if IsConnRefused(uerr.Err) {
 			return true
 		}
 	}
 	var op *net.OpError
-	if As(err, &op) {
+	if errors.As(err, &op) {
 		if se, ok := op.Err.(*os.SyscallError); ok {
 			return se.Err == syscall.ECONNREFUSED
 		}
@@ -50,30 +51,8 @@ func IsDialTimeout(err error) bool {
 		return false
 	}
 	var ne net.Error
-	if As(err, &ne) && ne.Timeout() {
+	if errors.As(err, &ne) && ne.Timeout() {
 		return true
 	}
 	return strings.Contains(strings.ToLower(err.Error()), "timeout")
-}
-
-// As is a wrapper around errors.As for compatibility
-func As(err error, target any) bool {
-	switch t := target.(type) {
-	case **url.Error:
-		if uerr, ok := err.(*url.Error); ok {
-			*t = uerr
-			return true
-		}
-	case **net.OpError:
-		if operr, ok := err.(*net.OpError); ok {
-			*t = operr
-			return true
-		}
-	case *net.Error:
-		if nerr, ok := err.(net.Error); ok {
-			*t = nerr
-			return true
-		}
-	}
-	return false
 }

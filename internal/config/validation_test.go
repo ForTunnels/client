@@ -11,46 +11,44 @@ import (
 )
 
 func TestValidateProtocolFlag(t *testing.T) {
-	// Note: This test verifies the logic, but cannot test os.Exit behavior
-	// In practice, invalid protocols will cause os.Exit(2)
 	tests := []struct {
 		name     string
 		protocol string
-		valid    bool
+		wantErr  bool
 	}{
-		{"valid http", protoHTTP, true},
-		{"valid https", protoHTTPS, true},
-		{"valid tcp", protoTCP, true},
-		{"valid udp", protoUDP, true},
-		{"invalid", "invalid", false},
+		{"valid http", protoHTTP, false},
+		{"valid https", protoHTTPS, false},
+		{"valid tcp", protoTCP, false},
+		{"valid udp", protoUDP, false},
+		{"invalid", "invalid", true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// We can only test that valid protocols don't cause issues
-			// Actual os.Exit behavior is tested in integration tests
-			if tt.valid {
-				// Valid protocols should not cause issues
-				validateProtocolFlag(tt.protocol)
+			err := validateProtocolFlag(tt.protocol)
+			if tt.wantErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "unsupported protocol")
+			} else {
+				require.NoError(t, err)
 			}
 		})
 	}
 }
 
 func TestEnforceEncryptionRequirements(t *testing.T) {
-	// Note: This test verifies the logic, but cannot test os.Exit behavior
-	// In practice, invalid encryption config will cause os.Exit(2)
 	tests := []struct {
 		name    string
 		encrypt bool
 		psk     string
-		valid   bool
+		wantErr bool
 	}{
-		{"encrypt with PSK", true, "12345678901234567890123456789012", true},
-		{"encrypt without PSK", true, "", false},
-		{"encrypt with empty PSK", true, "   ", false},
-		{"no encrypt", false, "", true},
-		{"no encrypt with PSK", false, "short-key", true},
+		{"encrypt with PSK", true, "12345678901234567890123456789012", false},
+		{"encrypt without PSK", true, "", true},
+		{"encrypt with empty PSK", true, "   ", true},
+		{"encrypt with short PSK", true, "short", true},
+		{"no encrypt", false, "", false},
+		{"no encrypt with PSK", false, "short-key", false},
 	}
 
 	for _, tt := range tests {
@@ -59,13 +57,75 @@ func TestEnforceEncryptionRequirements(t *testing.T) {
 				Encrypt: tt.encrypt,
 				PSK:     tt.psk,
 			}
-			// We can only test that valid configs don't cause issues
-			// Actual os.Exit behavior is tested in integration tests
-			if tt.valid {
-				enforceEncryptionRequirements(cfg)
+			err := enforceEncryptionRequirements(cfg)
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
 			}
 		})
 	}
+}
+
+func TestValidateServerURLFlag(t *testing.T) {
+	tests := []struct {
+		name               string
+		serverURL          string
+		serverFlagProvided bool
+		allowInsecureHTTP  bool
+		wantErr            bool
+	}{
+		{"default https", "https://example.com", false, false, false},
+		{"local http", "http://127.0.0.1:8080", true, false, false},
+		{"missing protocol", "127.0.0.1:8080", true, false, true},
+		{"invalid url", "http://", true, false, true},
+		{"remote http blocked", "http://example.com", true, false, true},
+		{"remote http allowed", "http://example.com", true, true, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateServerURLFlag(tt.serverURL, tt.serverFlagProvided, tt.allowInsecureHTTP)
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestValidateTargetAddress(t *testing.T) {
+	tests := []struct {
+		name    string
+		addr    string
+		wantErr bool
+	}{
+		{"valid", "127.0.0.1:8000", false},
+		{"empty", "", true},
+		{"invalid port", "127.0.0.1:0", true},
+		{"bad format", "bad", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateTargetAddress(tt.addr)
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestValidateSuccess(t *testing.T) {
+	cfg := &Config{
+		Protocol:   protoHTTP,
+		ServerURL:  "https://example.com",
+		TargetAddr: "127.0.0.1:8000",
+	}
+	require.NoError(t, Validate(cfg))
 }
 
 func TestIsLocalServerHost(t *testing.T) {
@@ -89,10 +149,8 @@ func TestIsLocalServerHost(t *testing.T) {
 }
 
 func TestValidateTargetAddressIfNeeded_TCPUsesTargetAddr(t *testing.T) {
-	// TCP expose-local: TargetAddr is validated
 	cfg := &Config{Protocol: protoTCP, TargetAddr: "127.0.0.1:5433"}
-	// Should not panic; TargetAddr is valid
-	validateTargetAddressIfNeeded(cfg)
+	require.NoError(t, validateTargetAddressIfNeeded(cfg))
 }
 
 func TestValidateLoginRequiresPassword(t *testing.T) {

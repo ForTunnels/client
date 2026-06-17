@@ -21,10 +21,13 @@ import (
 	"github.com/fortunnels/client/internal/config"
 )
 
+var debugLogging = strings.Contains(
+	strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL"))), "debug",
+)
+
 // logDebug logs at DEBUG level when LOG_LEVEL env contains "debug" or "DEBUG".
 func logDebug(format string, args ...any) {
-	lvl := strings.ToLower(strings.TrimSpace(os.Getenv("LOG_LEVEL")))
-	if strings.Contains(lvl, "debug") {
+	if debugLogging {
 		log.Printf("[DEBUG] "+format, args...)
 	}
 }

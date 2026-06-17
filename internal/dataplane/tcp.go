@@ -142,7 +142,13 @@ func bridgeStreamAndBackend(stream io.ReadWriteCloser, streamReader io.Reader, b
 	first := <-errCh
 	second := <-errCh
 	if first != nil {
+		if second != nil && !support.IsBenignCopyError(second) {
+			log.Printf("bridgeStreamAndBackend secondary error: %v", second)
+		}
 		return first
+	}
+	if second != nil && !support.IsBenignCopyError(second) {
+		log.Printf("bridgeStreamAndBackend secondary error: %v", second)
 	}
 	return second
 }
@@ -169,6 +175,7 @@ func closeWriteOrClose(stream io.ReadWriteCloser) {
 
 // flushBufferedBytes forwards only bytes already buffered in rd without blocking.
 // This prevents a deadlock where io.Copy waits for stream close before bridge startup.
+// The caller must not read from rd concurrently while this runs.
 func flushBufferedBytes(rd *bufio.Reader, dst io.Writer) error {
 	buffered := rd.Buffered()
 	if buffered == 0 {

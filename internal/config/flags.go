@@ -153,6 +153,7 @@ func Parse() (*Config, error) {
 	}
 
 	localProvided, serverProvided, protocolProvided, secretFlags := detectFlagOverrides()
+	clearSensitiveArgs(secretFlags)
 	cfg.ServerFlagProvided = serverProvided
 	cfg.TokenFlagProvided = secretFlags.token
 	cfg.PasswordFlagProvided = secretFlags.password
@@ -269,9 +270,69 @@ func appendFlagArgument(flags *[]string, args []string, idx *int, arg string) {
 }
 
 func needsInlineValue(arg string, args []string, idx int) bool {
-	return !strings.Contains(arg, "=") &&
-		idx+1 < len(args) &&
-		!strings.HasPrefix(args[idx+1], "-")
+	if strings.Contains(arg, "=") {
+		return false
+	}
+	if idx+1 >= len(args) {
+		return false
+	}
+	if strings.HasPrefix(args[idx+1], "-") {
+		return false
+	}
+	return !isBooleanCLIArg(arg)
+}
+
+var booleanCLIArgs = map[string]struct{}{
+	"allow-insecure-http":  {},
+	"pass-stdin":           {},
+	"token-stdin":          {},
+	"watch":                {},
+	"encrypt":              {},
+	"psk-stdin":            {},
+	"dp-auth-token-stdin":  {},
+	"dp-auth-secret-stdin": {},
+}
+
+func isBooleanCLIArg(arg string) bool {
+	name := strings.TrimPrefix(strings.TrimPrefix(arg, "--"), "-")
+	if i := strings.IndexByte(name, '='); i >= 0 {
+		name = name[:i]
+	}
+	_, ok := booleanCLIArgs[name]
+	return ok
+}
+
+func clearSensitiveArgs(flags secretFlagSet) {
+	type entry struct {
+		provided bool
+		names    []string
+	}
+	entries := []entry{
+		{flags.token, []string{"-token", "--token"}},
+		{flags.password, []string{"-pass", "--pass"}},
+		{flags.psk, []string{"-psk", "--psk"}},
+		{flags.dpAuthToken, []string{"-dp-auth-token", "--dp-auth-token"}},
+		{flags.dpAuthSecret, []string{"-dp-auth-secret", "--dp-auth-secret"}},
+	}
+	for _, entry := range entries {
+		if !entry.provided {
+			continue
+		}
+		for i := 1; i < len(os.Args); i++ {
+			arg := os.Args[i]
+			for _, name := range entry.names {
+				if arg == name {
+					if i+1 < len(os.Args) && !strings.HasPrefix(os.Args[i+1], "-") {
+						os.Args[i+1] = ""
+					}
+					continue
+				}
+				if strings.HasPrefix(arg, name+"=") {
+					os.Args[i] = name + "="
+				}
+			}
+		}
+	}
 }
 
 type secretFlagSet struct {

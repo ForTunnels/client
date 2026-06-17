@@ -89,9 +89,6 @@ func TestNewStrategy(t *testing.T) {
 			if strategy.RunningMessage == "" {
 				t.Error("NewStrategy() should set RunningMessage")
 			}
-			if strategy.StoppedMessage == "" {
-				t.Error("NewStrategy() should set StoppedMessage")
-			}
 			if strategy.ErrLabel == "" {
 				t.Error("NewStrategy() should set ErrLabel")
 			}
@@ -140,7 +137,6 @@ func TestStrategyRun(t *testing.T) {
 func TestSimpleStrategy(t *testing.T) {
 	description := "test description"
 	running := "running message"
-	stopped := "stopped message"
 	errLabel := "error label"
 	runnerErr := errors.New("runner error")
 
@@ -148,16 +144,13 @@ func TestSimpleStrategy(t *testing.T) {
 		return runnerErr
 	}
 
-	strategy := simpleStrategy(description, running, stopped, errLabel, runner)
+	strategy := simpleStrategy(description, running, errLabel, runner)
 
 	if strategy.Description != description {
 		t.Errorf("simpleStrategy() Description = %q, want %q", strategy.Description, description)
 	}
 	if strategy.RunningMessage != running {
 		t.Errorf("simpleStrategy() RunningMessage = %q, want %q", strategy.RunningMessage, running)
-	}
-	if strategy.StoppedMessage != stopped {
-		t.Errorf("simpleStrategy() StoppedMessage = %q, want %q", strategy.StoppedMessage, stopped)
 	}
 	if strategy.ErrLabel != errLabel {
 		t.Errorf("simpleStrategy() ErrLabel = %q, want %q", strategy.ErrLabel, errLabel)

@@ -69,7 +69,10 @@ func parseConfig() (*config.Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	config.Validate(cfg)
+	if err := config.Validate(cfg); err != nil {
+		fmt.Println("❌", err.Error())
+		os.Exit(2)
+	}
 	if err := ensureHTTPHasTarget(cfg); err != nil {
 		return nil, err
 	}

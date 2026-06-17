@@ -183,6 +183,13 @@ func TestParse_RejectsTooManyPositionals(t *testing.T) {
 	assert.ErrorContains(t, err, "too many positional")
 }
 
+func TestParse_BooleanFlagDoesNotConsumePositional(t *testing.T) {
+	cfg, err := testParseWithArgs(t, []string{"client", "--encrypt", "127.0.0.1:9000"})
+	require.NoError(t, err)
+	assert.True(t, cfg.Encrypt)
+	assert.Equal(t, "127.0.0.1:9000", cfg.TargetAddr)
+}
+
 func TestApplySecretSourcesFromEnv(t *testing.T) {
 	t.Setenv("FORTUNNELS_TOKEN", "env-token")
 	t.Setenv("FORTUNNELS_PASSWORD", "env-password")

@@ -19,7 +19,6 @@ const (
 type Strategy struct {
 	Description    string
 	RunningMessage string
-	StoppedMessage string
 	ErrLabel       string
 	runner         func() error
 }
@@ -44,7 +43,6 @@ func NewStrategy(
 		return simpleStrategy(
 			fmt.Sprintf(quicDescription, listen, dst),
 			"🔌 UDP QUIC tunnel running. Press Ctrl+C to stop.",
-			"UDP QUIC tunnel stopped.",
 			"udp quic mode error",
 			func() error {
 				return StartQUICDataPlaneUDP(serverURL, tunnelID, authToken, dst, listen)
@@ -54,7 +52,6 @@ func NewStrategy(
 		return simpleStrategy(
 			fmt.Sprintf(dtlsDescription, listen, dst),
 			"🔌 UDP DTLS tunnel running. Press Ctrl+C to stop.",
-			"UDP DTLS tunnel stopped.",
 			"udp dtls mode error",
 			func() error {
 				return StartDTLSDataPlaneUDP(serverURL, tunnelID, authToken, dst, listen)
@@ -64,7 +61,6 @@ func NewStrategy(
 		return simpleStrategy(
 			fmt.Sprintf(wsDescription, listen, dst),
 			"🔌 UDP tunnel running. Press Ctrl+C to stop.",
-			"UDP tunnel stopped.",
 			"udp mode error",
 			func() error {
 				return StartDataPlaneUDP(serverURL, tunnelID, dst, listen, runtime, enc, authToken)
@@ -73,11 +69,10 @@ func NewStrategy(
 	}
 }
 
-func simpleStrategy(description, running, stopped, errLabel string, runner func() error) Strategy {
+func simpleStrategy(description, running, errLabel string, runner func() error) Strategy {
 	return Strategy{
 		Description:    description,
 		RunningMessage: running,
-		StoppedMessage: stopped,
 		ErrLabel:       errLabel,
 		runner:         runner,
 	}

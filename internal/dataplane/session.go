@@ -145,6 +145,8 @@ type Manager struct {
 	mu          sync.Mutex
 	conn        *websocket.Conn
 	sess        *smux.Session
+	pingDone    chan struct{}
+	pingTicker  *time.Ticker
 	stopped     bool
 	boInit      time.Duration
 	boMax       time.Duration
@@ -190,7 +192,15 @@ func (m *Manager) EnsureSession() (*smux.Session, error) {
 				return sess, nil
 			}
 		}
+		m.mu.Unlock()
 		time.Sleep(backoff)
+		m.mu.Lock()
+		if m.stopped {
+			return nil, errors.New("stopped")
+		}
+		if m.sess != nil && !m.sess.IsClosed() {
+			return m.sess, nil
+		}
 		backoff = nextBackoff(backoff, m.boMax)
 	}
 }
@@ -226,31 +236,16 @@ func (m *Manager) initializeSession(conn *websocket.Conn) (*smux.Session, error)
 
 	m.conn = conn
 	m.sess = sess
-	m.startSessionPing(conn)
+	if m.pingDone != nil {
+		close(m.pingDone)
+	}
+	if m.pingTicker != nil {
+		m.pingTicker.Stop()
+	}
+	m.pingDone = make(chan struct{})
+	m.pingTicker = time.NewTicker(m.settings.PingInterval)
+	startPingLoop(m.pingDone, conn, m.pingTicker, m.settings.PingTimeout)
 	return sess, nil
-}
-
-func (m *Manager) startSessionPing(conn *websocket.Conn) {
-	go func() {
-		t := time.NewTicker(m.settings.PingInterval)
-		defer t.Stop()
-		for {
-			select {
-			case <-t.C:
-				//nolint:errcheck // best-effort ping
-				_ = conn.WriteControl(
-					websocket.PingMessage,
-					nil,
-					time.Now().Add(m.settings.PingTimeout),
-				)
-			default:
-				if m.sess == nil || m.sess.IsClosed() {
-					return
-				}
-				time.Sleep(1 * time.Second)
-			}
-		}
-	}()
 }
 
 func nextBackoff(current, limit time.Duration) time.Duration {
@@ -265,6 +260,14 @@ func (m *Manager) Close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.stopped = true
+	if m.pingDone != nil {
+		close(m.pingDone)
+		m.pingDone = nil
+	}
+	if m.pingTicker != nil {
+		m.pingTicker.Stop()
+		m.pingTicker = nil
+	}
 	if m.sess != nil {
 		_ = m.sess.Close()
 	}
