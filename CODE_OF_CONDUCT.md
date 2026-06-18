@@ -11,4 +11,4 @@ We are committed to providing a friendly, safe, and welcoming community.
 ## Enforcement
 
 If you experience or witness unacceptable behavior, please contact the maintainers
-at support@fortunnels.ru.
+at <fortunnels@yandex.ru>.

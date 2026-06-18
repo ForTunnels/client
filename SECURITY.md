@@ -4,7 +4,7 @@
 
 **Please do not open public GitHub issues for security vulnerabilities.**
 
-Instead, email [support@fortunnels.ru](mailto:support@fortunnels.ru) with details of the issue.
+Instead, email [fortunnels@yandex.ru](mailto:fortunnels@yandex.ru) with details of the issue.
 
 ### What to include
 
@@ -60,7 +60,6 @@ Instead, email [support@fortunnels.ru](mailto:support@fortunnels.ru) with detail
 4. **Do not reuse a PSK across tunnels**
 
 5. **Keep the client up to date** to receive the latest security fixes
-
 
 ## Acknowledgements
 
