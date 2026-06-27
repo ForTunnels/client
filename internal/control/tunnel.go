@@ -206,6 +206,14 @@ func PrintTunnelInfoWithOutput(out Output, serverURL string, tunnel *Response) {
 	}
 }
 
+// WarnGuestTunnelWithLogin prints a stderr hint when login was provided but the tunnel is guest.
+func WarnGuestTunnelWithLogin(loginUsed bool, tunnel *Response) {
+	if !loginUsed || tunnel == nil || !tunnel.IsGuest {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "⚠️  Tunnel created as guest; login credentials were not applied. Check fortunnels.yml authtoken or server auth.\n")
+}
+
 // PrintHTTPHints prints host-based public URL usage for HTTP tunnels.
 func PrintHTTPHints(t *Response) {
 	PrintHTTPHintsWithOutput(StdOutput{}, t)

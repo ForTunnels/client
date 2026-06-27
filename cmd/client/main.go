@@ -104,11 +104,22 @@ func runClientWorkflow(cfg *config.Config) error {
 		return clierrors.HandleTunnelCreationError(err, cfg.ServerURL)
 	}
 
+	if err := auth.CheckBearerNotRejectedAsGuest(bearer, cfg.TokenFromConfigFile, auth.TunnelGuestSignals{
+		IsGuest: tun.IsGuest,
+		UserID:  tun.UserID,
+	}); err != nil {
+		// Guest tunnel was created without valid auth; omit rejected bearer on cleanup.
+		ctrl.DeleteTunnelWithClient(cfg.ServerURL, tun.ID, httpClient, "", csrf)
+		return fmt.Errorf("❌ Authentication failed: %w", err)
+	}
+
 	runtime := cfg.RuntimeSettings()
 	enc := cfg.EncryptionSettings()
 	authToken := auth.ComputeDataPlaneAuthWithPSK(tun.ID, cfg.DPAuthToken, cfg.DPAuthSecret, cfg.PSK, enc.Enabled)
 
 	ctrl.PrintTunnelInfo(cfg.ServerURL, tun)
+	loginUsed := strings.TrimSpace(cfg.Login) != "" && strings.TrimSpace(cfg.Password) != ""
+	ctrl.WarnGuestTunnelWithLogin(loginUsed, tun)
 	if err := handleHTTPProtocol(cfg, runtime, tun, httpClient, bearer, csrf, authToken); err != nil {
 		return err
 	}

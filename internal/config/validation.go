@@ -38,7 +38,7 @@ func Validate(cfg *Config) error {
 // validateLoginPasswordPair returns an error if --login is provided without a password.
 // Password may come from --pass, --pass-file, --pass-stdin, or FORTUNNELS_PASSWORD.
 func validateLoginPasswordPair(cfg *Config) error {
-	if strings.TrimSpace(cfg.Token) != "" {
+	if cfg.TokenFlagProvided && strings.TrimSpace(cfg.Token) != "" {
 		return nil
 	}
 	if strings.TrimSpace(cfg.Login) == "" {

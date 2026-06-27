@@ -25,10 +25,11 @@ const csrfCookieName = "csrf_token"
 // SetupAuthentication configures HTTP client and authentication for tunnel creation.
 // Returns (httpClient, bearerToken, csrfToken, error). csrfToken is set after login/password
 // when the server issues a csrf_token cookie (needed for session POST/DELETE when CSRF is enabled).
+//
+// Precedence: explicit --token flag, then --login + password, then config/env token, else guest.
 func SetupAuthentication(cfg *config.Config) (*http.Client, string, string, error) {
-	if strings.TrimSpace(cfg.Token) != "" {
-		bearer := strings.TrimSpace(cfg.Token)
-		return nil, bearer, "", nil
+	if cfg.TokenFlagProvided && strings.TrimSpace(cfg.Token) != "" {
+		return nil, strings.TrimSpace(cfg.Token), "", nil
 	}
 	if strings.TrimSpace(cfg.Login) != "" && strings.TrimSpace(cfg.Password) != "" {
 		jar, err := cookiejar.New(nil)
@@ -47,6 +48,13 @@ func SetupAuthentication(cfg *config.Config) (*http.Client, string, string, erro
 			log.Printf("[WARN] csrf bootstrap: csrf_token cookie not set (server may have CSRF disabled)")
 		}
 		return httpClient, "", csrf, nil
+	}
+	if strings.TrimSpace(cfg.Token) != "" {
+		token := strings.TrimSpace(cfg.Token)
+		if err := validateConfigAuthtoken(token, cfg.TokenFromConfigFile); err != nil {
+			return nil, "", "", err
+		}
+		return nil, token, "", nil
 	}
 	return nil, "", "", nil
 }

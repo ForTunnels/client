@@ -155,11 +155,12 @@ func TestValidateTargetAddressIfNeeded_TCPUsesTargetAddr(t *testing.T) {
 
 func TestValidateLoginRequiresPassword(t *testing.T) {
 	tests := []struct {
-		name     string
-		login    string
-		password string
-		token    string
-		wantErr  bool
+		name              string
+		login             string
+		password          string
+		token             string
+		tokenFlagProvided bool
+		wantErr           bool
 	}{
 		{
 			name:     "login without password fails",
@@ -176,11 +177,19 @@ func TestValidateLoginRequiresPassword(t *testing.T) {
 			wantErr:  false,
 		},
 		{
-			name:     "login with token passes (token auth takes precedence)",
+			name:              "explicit token flag skips login password requirement",
+			login:             "user",
+			password:          "",
+			token:             "bearer-token",
+			tokenFlagProvided: true,
+			wantErr:           false,
+		},
+		{
+			name:     "config token without flag still requires password with login",
 			login:    "user",
 			password: "",
 			token:    "bearer-token",
-			wantErr:  false,
+			wantErr:  true,
 		},
 		{
 			name:     "no login passes",
@@ -201,9 +210,10 @@ func TestValidateLoginRequiresPassword(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &Config{
-				Login:    tt.login,
-				Password: tt.password,
-				Token:    tt.token,
+				Login:             tt.login,
+				Password:          tt.password,
+				Token:             tt.token,
+				TokenFlagProvided: tt.tokenFlagProvided,
 			}
 			err := validateLoginPasswordPair(cfg)
 			if tt.wantErr {

@@ -72,7 +72,9 @@ type Config struct {
 	DTLSPort              int
 
 	ServerFlagProvided       bool
+	LoginFlagProvided        bool
 	TokenFlagProvided        bool
+	TokenFromConfigFile      bool
 	PasswordFlagProvided     bool
 	PSKFlagProvided          bool
 	DPAuthTokenFlagProvided  bool
@@ -183,6 +185,7 @@ func Parse() (*Config, error) {
 	localProvided, serverProvided, protocolProvided, secretFlags := detectFlagOverrides()
 	clearSensitiveArgs(secretFlags)
 	cfg.ServerFlagProvided = serverProvided
+	cfg.LoginFlagProvided = secretFlags.login
 	cfg.TokenFlagProvided = secretFlags.token
 	cfg.PasswordFlagProvided = secretFlags.password
 	cfg.PSKFlagProvided = secretFlags.psk
@@ -367,6 +370,7 @@ func clearSensitiveArgs(flags secretFlagSet) {
 }
 
 type secretFlagSet struct {
+	login        bool
 	token        bool
 	password     bool
 	psk          bool
@@ -387,6 +391,7 @@ func detectFlagOverrides() (localProvided, serverProvided, protocolProvided bool
 		return false
 	}
 	secrets = secretFlagSet{
+		login:        flagProvided("login"),
 		token:        flagProvided("token"),
 		password:     flagProvided("pass"),
 		psk:          flagProvided("psk"),
@@ -514,8 +519,17 @@ func applyConfigFileAuthtoken(cfg *Config) {
 	if cfg == nil || strings.TrimSpace(cfg.Token) != "" {
 		return
 	}
+	if strings.TrimSpace(cfg.Login) != "" {
+		if strings.TrimSpace(cfg.Password) != "" && !cfg.TokenFlagProvided {
+			if tok := AuthtokenFromFile(); tok != "" {
+				fmt.Fprintf(os.Stderr, "⚠️  fortunnels.yml authtoken ignored; using --login credentials\n")
+			}
+		}
+		return
+	}
 	if tok := AuthtokenFromFile(); tok != "" {
 		cfg.Token = tok
+		cfg.TokenFromConfigFile = true
 	}
 }
 
