@@ -10,6 +10,23 @@ import (
 	"github.com/fortunnels/client/internal/config"
 )
 
+// MapCreateTunnelAuthError returns a friendly error when tunnel create failed because
+// the server rejected a non-empty bearer credential (401).
+func MapCreateTunnelAuthError(createErr error, bearer string, fromConfigFile bool) error {
+	if createErr == nil || strings.TrimSpace(bearer) == "" {
+		return nil
+	}
+	if !isUnauthorizedTunnelCreateError(createErr) {
+		return nil
+	}
+	return errBearerRejectedAsGuest(fromConfigFile)
+}
+
+func isUnauthorizedTunnelCreateError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "status 401") || strings.Contains(msg, "status code 401")
+}
+
 // TunnelGuestSignals carries create-response fields used to detect guest fallback.
 type TunnelGuestSignals struct {
 	IsGuest bool

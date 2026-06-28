@@ -4,6 +4,7 @@
 package auth
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -52,5 +53,30 @@ func TestCheckBearerNotRejectedAsGuest(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "config add-authtoken")
 		assert.Contains(t, err.Error(), "FORTUNNELS_TOKEN")
+	})
+}
+
+func TestMapCreateTunnelAuthError(t *testing.T) {
+	t.Parallel()
+
+	t.Run("401 with config authtoken", func(t *testing.T) {
+		t.Parallel()
+		createErr := fmt.Errorf("server returned status 401: unauthorized")
+		err := MapCreateTunnelAuthError(createErr, "ft_revoked", true)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "saved authtoken")
+		assert.Contains(t, err.Error(), "config add-authtoken")
+	})
+
+	t.Run("401 without bearer", func(t *testing.T) {
+		t.Parallel()
+		createErr := fmt.Errorf("server returned status 401: unauthorized")
+		require.NoError(t, MapCreateTunnelAuthError(createErr, "", true))
+	})
+
+	t.Run("non-401 with bearer", func(t *testing.T) {
+		t.Parallel()
+		createErr := fmt.Errorf("server returned status 403: forbidden")
+		require.NoError(t, MapCreateTunnelAuthError(createErr, "ft_revoked", true))
 	})
 }

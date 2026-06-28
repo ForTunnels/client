@@ -101,6 +101,9 @@ func runClientWorkflow(cfg *config.Config) error {
 		csrf,
 	)
 	if err != nil {
+		if authErr := auth.MapCreateTunnelAuthError(err, bearer, cfg.TokenFromConfigFile); authErr != nil {
+			return fmt.Errorf("❌ Authentication failed: %w", authErr)
+		}
 		return clierrors.HandleTunnelCreationError(err, cfg.ServerURL)
 	}
 
@@ -150,7 +153,6 @@ func handleHTTPProtocol(cfg *config.Config, runtime config.RuntimeSettings, tun 
 	}()
 	go ctrl.RunFallbackLifecyclePoller(httpClient, cfg.ServerURL, tun.ID, bearer, func() { close(tunnelDeletedCh) }, runtime.WatchInterval)
 
-	ctrl.PrintHTTPHints(tun)
 	fmt.Println("💡 Tip: If you see 'Backend unreachable', start your backend on the target address.")
 	fmt.Println("\n🔌 Serving HTTP over data-plane. Press Ctrl+C to stop.")
 	sigc := make(chan os.Signal, 1)

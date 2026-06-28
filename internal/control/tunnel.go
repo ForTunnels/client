@@ -213,17 +213,3 @@ func WarnGuestTunnelWithLogin(loginUsed bool, tunnel *Response) {
 	}
 	fmt.Fprintf(os.Stderr, "⚠️  Tunnel created as guest; login credentials were not applied. Check fortunnels.yml authtoken or server auth.\n")
 }
-
-// PrintHTTPHints prints host-based public URL usage for HTTP tunnels.
-func PrintHTTPHints(t *Response) {
-	PrintHTTPHintsWithOutput(StdOutput{}, t)
-}
-
-func PrintHTTPHintsWithOutput(out Output, t *Response) {
-	if out == nil {
-		out = StdOutput{}
-	}
-	out.Println("\n💡 Usage hints (HTTP):")
-	out.Printf("- Host-based (most transparent): %s\n", t.PublicURL)
-	_ = os.Stdout.Sync()
-}
