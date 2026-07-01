@@ -79,6 +79,9 @@ func parseConfig() (*config.Config, error) {
 	if err := ensureTCPHasTarget(cfg); err != nil {
 		return nil, err
 	}
+	if err := ensureUDPHasTarget(cfg); err != nil {
+		return nil, err
+	}
 	return cfg, nil
 }
 
@@ -173,7 +176,7 @@ func handleHTTPProtocol(cfg *config.Config, runtime config.RuntimeSettings, tun 
 
 // handleTCPServeIncoming is the default TCP mode: serve incoming streams from server, dial local backend.
 func handleTCPServeIncoming(cfg *config.Config, runtime config.RuntimeSettings, tun *ctrl.Response, httpClient *http.Client, bearer, csrf, dpAuthToken string) error {
-	if cfg.Protocol != "tcp" {
+	if !strings.EqualFold(cfg.Protocol, "tcp") {
 		return nil
 	}
 	reporter := dp.NewBackendStateReporter()
@@ -203,15 +206,46 @@ func handleTCPServeIncoming(cfg *config.Config, runtime config.RuntimeSettings, 
 	}
 }
 
-// handleUDPProtocol delegates to UDP, QUIC, and DTLS packages
+// handleUDPProtocol runs expose-local (default) or advanced reverse UDP proxy mode.
 func handleUDPProtocol(cfg *config.Config, runtime config.RuntimeSettings, enc config.EncryptionSettings, tun *ctrl.Response, authToken string, httpClient *http.Client, bearer, csrf string) error {
-	if cfg.Protocol != "udp" {
+	if !strings.EqualFold(cfg.Protocol, "udp") {
 		return nil
 	}
-	if cfg.UDPListen == "" || cfg.UDPDst == "" {
-		return fmt.Errorf("for UDP mode, both --udp-listen and --udp-dst are required")
+	if config.IsUDPReverseMode(cfg) {
+		return handleUDPReverseMode(cfg, runtime, enc, tun, authToken, httpClient, bearer, csrf)
 	}
+	return handleUDPExposeLocal(cfg, runtime, tun, authToken, httpClient, bearer, csrf)
+}
 
+func handleUDPExposeLocal(cfg *config.Config, runtime config.RuntimeSettings, tun *ctrl.Response, authToken string, httpClient *http.Client, bearer, csrf string) error {
+	reporter := dp.NewBackendStateReporter()
+	errCh := make(chan error, 1)
+	tunnelDeletedCh := make(chan struct{})
+	go func() {
+		errCh <- dp.StartDataPlaneServeIncomingUDP(cfg.ServerURL, tun.ID, runtime, reporter, authToken)
+	}()
+	go ctrl.RunFallbackLifecyclePoller(httpClient, cfg.ServerURL, tun.ID, bearer, func() { close(tunnelDeletedCh) }, runtime.WatchInterval)
+	log.Printf("INFO: UDP expose-local mode active; backend target %s", cfg.TargetAddr)
+	fmt.Printf("\n🔌 Serving UDP over data-plane (expose-local). Backend: %s\n", cfg.TargetAddr)
+	fmt.Println("💡 Tip: If you see 'Backend unreachable', start your backend on the target address.")
+	fmt.Println("\n🔌 Press Ctrl+C to stop.")
+	sigc := make(chan os.Signal, 1)
+	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
+	select {
+	case <-sigc:
+		return nil
+	case <-tunnelDeletedCh:
+		return nil
+	case err := <-errCh:
+		if err != nil {
+			ctrl.DeleteTunnelWithClient(cfg.ServerURL, tun.ID, httpClient, bearer, csrf)
+			return fmt.Errorf("❌ Data-plane serve stopped: %w", err)
+		}
+		return nil
+	}
+}
+
+func handleUDPReverseMode(cfg *config.Config, runtime config.RuntimeSettings, enc config.EncryptionSettings, tun *ctrl.Response, authToken string, httpClient *http.Client, bearer, csrf string) error {
 	errCh := make(chan error, 1)
 	tunnelDeletedCh := make(chan struct{})
 	go ctrl.RunFallbackLifecyclePoller(httpClient, cfg.ServerURL, tun.ID, bearer, func() { close(tunnelDeletedCh) }, runtime.WatchInterval)
@@ -256,11 +290,21 @@ func ensureHTTPHasTarget(cfg *config.Config) error {
 }
 
 func ensureTCPHasTarget(cfg *config.Config) error {
-	if cfg.Protocol != "tcp" {
+	if !strings.EqualFold(cfg.Protocol, "tcp") {
 		return nil
 	}
 	if cfg.TargetAddr == "" {
 		return fmt.Errorf("target address is required for TCP expose-local mode (e.g. 127.0.0.1:5433)")
+	}
+	return nil
+}
+
+func ensureUDPHasTarget(cfg *config.Config) error {
+	if !config.IsUDPExposeLocalMode(cfg) {
+		return nil
+	}
+	if cfg.TargetAddr == "" {
+		return fmt.Errorf("target address is required for UDP expose-local mode (e.g. 127.0.0.1:9000)")
 	}
 	return nil
 }

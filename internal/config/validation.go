@@ -31,6 +31,12 @@ func Validate(cfg *Config) error {
 	if err := validateLoginPasswordPair(cfg); err != nil {
 		return err
 	}
+	if err := ValidateUDPModeFlags(cfg); err != nil {
+		return err
+	}
+	if err := ValidateUDPExposeLocalOptions(cfg); err != nil {
+		return err
+	}
 	warnOnSensitiveFlagUsage(cfg)
 	return nil
 }
@@ -76,10 +82,18 @@ func validateServerURLFlag(serverURL string, serverFlagProvided, allowInsecureHT
 }
 
 func validateTargetAddressIfNeeded(cfg *Config) error {
-	if cfg.Protocol != protoHTTP && cfg.Protocol != protoHTTPS && cfg.Protocol != protoTCP {
+	protocol := strings.ToLower(strings.TrimSpace(cfg.Protocol))
+	switch protocol {
+	case protoHTTP, protoHTTPS, protoTCP:
+		return validateTargetAddress(cfg.TargetAddr)
+	case protoUDP:
+		if IsUDPExposeLocalMode(cfg) {
+			return validateTargetAddress(cfg.TargetAddr)
+		}
+		return nil
+	default:
 		return nil
 	}
-	return validateTargetAddress(cfg.TargetAddr)
 }
 
 func validateTargetAddress(addr string) error {

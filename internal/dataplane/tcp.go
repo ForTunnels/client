@@ -199,19 +199,24 @@ func flushBufferedBytes(rd *bufio.Reader, dst io.Writer) error {
 }
 
 func readStreamDestination(rd *bufio.Reader) (string, error) {
+	_, dst, err := readStreamPreface(rd)
+	return dst, err
+}
+
+func readStreamPreface(rd *bufio.Reader) (proto, dst string, err error) {
 	for {
-		line, err := rd.ReadString('\n')
-		if err != nil {
-			return "", err
+		line, readErr := rd.ReadString('\n')
+		if readErr != nil {
+			return "", "", readErr
 		}
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
 		}
 		var pre map[string]string
-		if err := json.Unmarshal([]byte(line), &pre); err != nil {
-			return "", err
+		if unmarshalErr := json.Unmarshal([]byte(line), &pre); unmarshalErr != nil {
+			return "", "", unmarshalErr
 		}
-		return pre["dst"], nil
+		return pre["proto"], pre["dst"], nil
 	}
 }

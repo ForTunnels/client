@@ -8,7 +8,9 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"io"
+	"net"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -267,4 +269,71 @@ func TestSendUDPPreface_WriteError(t *testing.T) {
 	}
 	err := sendUDPPreface(writer, "127.0.0.1:8080", "tunnel-123")
 	require.Error(t, err, "sendUDPPreface() with write error should return error")
+}
+
+func startUDPEchoBackend(t *testing.T) (addr string, cleanup func()) {
+	t.Helper()
+	udpAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	require.NoError(t, err)
+	c, err := net.ListenUDP("udp", udpAddr)
+	require.NoError(t, err)
+	done := make(chan struct{})
+	go func() {
+		buf := make([]byte, udpMaxPacketSize)
+		for {
+			select {
+			case <-done:
+				return
+			default:
+			}
+			_ = c.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+			n, src, readErr := c.ReadFromUDP(buf)
+			if readErr != nil {
+				continue
+			}
+			_, _ = c.WriteToUDP(buf[:n], src)
+		}
+	}()
+	return c.LocalAddr().String(), func() {
+		close(done)
+		_ = c.Close()
+	}
+}
+
+func TestServeIncomingUDPStream_RoundTrip(t *testing.T) {
+	echoAddr, cleanup := startUDPEchoBackend(t)
+	defer cleanup()
+
+	clientConn, serverConn := net.Pipe()
+	defer clientConn.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- serveIncomingUDPStream(serverConn, nil)
+	}()
+
+	preface := []byte(`{"dst":"` + echoAddr + `","proto":"udp"}` + "\n")
+	_, err := clientConn.Write(preface)
+	require.NoError(t, err)
+
+	payload := []byte("ping-udp")
+	require.NoError(t, writeUDPPacket(clientConn, payload))
+
+	resp, err := readUDPPacket(clientConn)
+	require.NoError(t, err)
+	require.Equal(t, payload, resp)
+
+	_ = clientConn.Close()
+	<-errCh
+}
+
+func TestServeIncomingUDPStream_NonUDPPreface(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	go func() {
+		_, _ = clientConn.Write([]byte(`{"dst":"127.0.0.1:1","proto":"tcp"}` + "\n"))
+		_ = clientConn.Close()
+	}()
+	err := serveIncomingUDPStream(serverConn, nil)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "expected udp preface")
 }

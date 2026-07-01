@@ -157,8 +157,8 @@ func Parse() (*Config, error) {
 	fs.StringVar(&cfg.UserID, "user", cfg.UserID, "User ID")
 	fs.IntVar(&backoffInitialSec, "backoff-initial", backoffInitialSec, "Initial reconnect backoff seconds")
 	fs.IntVar(&backoffMaxSec, "backoff-max", backoffMaxSec, "Max reconnect backoff seconds")
-	fs.StringVar(&cfg.UDPListen, "udp-listen", cfg.UDPListen, "Local UDP listen address (e.g. :5353) for client UDP mode")
-	fs.StringVar(&cfg.UDPDst, "udp-dst", cfg.UDPDst, "Destination UDP address on server side (e.g. 127.0.0.1:53)")
+	fs.StringVar(&cfg.UDPListen, "udp-listen", cfg.UDPListen, "Advanced reverse UDP mode: local UDP listen address (e.g. :5353); requires --udp-dst")
+	fs.StringVar(&cfg.UDPDst, "udp-dst", cfg.UDPDst, "Advanced reverse UDP mode: server-side UDP destination (e.g. 127.0.0.1:53); requires --udp-listen")
 	fs.StringVar(&durations.PingInterval, "ping-interval", "30s", "WebSocket ping interval")
 	fs.StringVar(&durations.PingTimeout, "ping-timeout", "10s", "WebSocket ping write deadline")
 	fs.StringVar(&durations.SmuxInterval, "smux-keepalive-interval", "25s", "smux keepalive interval")
@@ -212,6 +212,8 @@ func Parse() (*Config, error) {
 	}
 	applyTransportPortEnv(cfg)
 	applyConfigFileAuthtoken(cfg)
+
+	cfg.Protocol = strings.ToLower(strings.TrimSpace(cfg.Protocol))
 
 	return cfg, nil
 }

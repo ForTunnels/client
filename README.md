@@ -221,7 +221,7 @@ Use the public URL to configure the webhook.
 ### SSH access
 
 ```bash
-./bin/client -protocol tcp -local 127.0.0.1:22 -dst localhost:3333 -listen :4000
+./bin/client tcp 22
 ```
 
 ### UDP (DNS)
@@ -245,7 +245,7 @@ Use the public URL to configure the webhook.
 ### QUIC transport
 
 ```bash
-./bin/client -protocol tcp -dp quic -dst localhost:3333
+./bin/client tcp 22 -dp quic
 ```
 
 ### DTLS transport (UDP)
