@@ -39,19 +39,19 @@ func TestParsePortAndLooksLikeHostPort(t *testing.T) {
 	}
 }
 
-func TestPrintHTTPHints(t *testing.T) {
-	// Capture stdout
+func TestPrintTunnelInfo(t *testing.T) {
 	old := os.Stdout
 	r, w, _ := os.Pipe()
 	os.Stdout = w
 
 	tun := &ctrlTunnel.Response{
 		ID:         "tid",
-		UserID:     100, // int64, not string
+		UserID:     100,
 		TargetAddr: "127.0.0.1:8000",
 		PublicURL:  "http://pub",
+		Status:     "active",
 	}
-	ctrlTunnel.PrintHTTPHints(tun)
+	ctrlTunnel.PrintTunnelInfo("http://localhost:8080", tun)
 
 	_ = w.Close()
 	os.Stdout = old
@@ -59,12 +59,14 @@ func TestPrintHTTPHints(t *testing.T) {
 	_, _ = io.Copy(&buf, r)
 	out := buf.String()
 
-	// Check that usage hints are present
-	if !strings.Contains(out, "Usage hints (HTTP)") {
-		t.Fatalf("expected usage hints header in output, got: %s", out)
+	if !strings.Contains(out, "Tunnel created successfully") {
+		t.Fatalf("expected success message in output, got: %s", out)
 	}
 	if !strings.Contains(out, "http://pub") {
-		t.Fatalf("expected host-based public URL in output, got: %s", out)
+		t.Fatalf("expected public URL in output, got: %s", out)
+	}
+	if !strings.Contains(out, "tid") {
+		t.Fatalf("expected tunnel ID in output, got: %s", out)
 	}
 }
 
