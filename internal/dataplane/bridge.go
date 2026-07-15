@@ -4,6 +4,7 @@
 package dataplane
 
 import (
+	"errors"
 	"io"
 	"log"
 	"net"
@@ -37,7 +38,7 @@ func PipeStreams(a net.Conn, b io.ReadWriteCloser) {
 func startBufferedCopy(dst io.Writer, src io.Reader, buf []byte, label string, done chan<- struct{}) {
 	go func() {
 		_, err := io.CopyBuffer(dst, src, buf)
-		if err != nil && err != io.EOF && !isClosedPipe(err) {
+		if err != nil && !errors.Is(err, io.EOF) && !isClosedPipe(err) {
 			log.Printf("client bridge: copy %s error: %v", label, err)
 		}
 		done <- struct{}{}

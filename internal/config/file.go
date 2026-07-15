@@ -19,7 +19,7 @@ const (
 	fileConfigName        = "fortunnels.yml"
 	envConfigPath         = "FORTUNNELS_CONFIG"
 	errMsgConfigVersion   = "config version must be 3"
-	errMsgConfigAuthtoken = "agent.authtoken is required"
+	errMsgConfigAuthtoken = "agent.authtoken is required" //nolint:gosec // user-facing validation message, not a secret
 )
 
 // FileConfig is the on-disk fortunnels.yml schema (version 3).

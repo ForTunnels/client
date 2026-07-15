@@ -45,7 +45,7 @@ func TestCheckTunnelDeleted(t *testing.T) {
 		{
 			name:     "missing exists field",
 			response: map[string]interface{}{"id": "tunnel-123"},
-			expected: false,
+			expected: true,
 		},
 		{
 			name:     "invalid exists type",

@@ -38,8 +38,9 @@ func IsConnRefused(err error) bool {
 	}
 	var op *net.OpError
 	if errors.As(err, &op) {
-		if se, ok := op.Err.(*os.SyscallError); ok {
-			return se.Err == syscall.ECONNREFUSED
+		var se *os.SyscallError
+		if errors.As(op.Err, &se) {
+			return errors.Is(se.Err, syscall.ECONNREFUSED)
 		}
 	}
 	return strings.Contains(strings.ToLower(err.Error()), "connection refused")

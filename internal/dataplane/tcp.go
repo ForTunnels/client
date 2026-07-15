@@ -46,6 +46,7 @@ func NewBackendStateReporter() BackendStateReporter {
 	}
 }
 
+//nolint:dupl // TCP and UDP incoming serve loops share the same session accept pattern.
 func StartDataPlaneServeIncoming(serverURL, tunnelID string, runtime config.RuntimeSettings, reporter BackendStateReporter, dpAuthToken string) error {
 	mgr := NewManager(serverURL, tunnelID, dpAuthToken, time.Second, 30*time.Second, runtime)
 	defer mgr.Close()

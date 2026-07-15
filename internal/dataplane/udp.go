@@ -19,6 +19,8 @@ import (
 )
 
 // StartDataPlaneServeIncomingUDP accepts smux streams opened by server UDP ingress and bridges to a local UDP backend.
+//
+//nolint:dupl // TCP and UDP incoming serve loops share the same session accept pattern.
 func StartDataPlaneServeIncomingUDP(serverURL, tunnelID string, runtime config.RuntimeSettings, reporter BackendStateReporter, dpAuthToken string) error {
 	mgr := NewManager(serverURL, tunnelID, dpAuthToken, time.Second, 30*time.Second, runtime)
 	defer mgr.Close()

@@ -4,6 +4,7 @@
 package support
 
 import (
+	"errors"
 	"io"
 	"net"
 	"os"
@@ -22,6 +23,9 @@ func TestIsBenignCopyError(t *testing.T) {
 		{"ErrClosedPipe", io.ErrClosedPipe, true},
 		{"net.ErrClosed", net.ErrClosed, true},
 		{"connection closed message", &net.OpError{Err: &os.SyscallError{Err: net.ErrClosed}}, true},
+		{"broken pipe message", errors.New("broken pipe"), true},
+		{"stream closed message", errors.New("stream closed"), true},
+		{"real error", errors.New("permission denied"), false},
 	}
 
 	for _, tt := range tests {
@@ -92,6 +96,64 @@ func TestToUint32Size(t *testing.T) {
 				t.Errorf("ToUint32Size(%d) = %d, want %d", tt.input, result, tt.input)
 			}
 		})
+	}
+}
+
+func TestGetEnvTrimmed(t *testing.T) {
+	t.Setenv("TEST_ENV_TRIM", "  value  ")
+	if got := GetEnvTrimmed("TEST_ENV_TRIM"); got != "value" {
+		t.Fatalf("GetEnvTrimmed() = %q, want value", got)
+	}
+	t.Setenv("TEST_ENV_BLANK", "   ")
+	if got := GetEnvTrimmed("TEST_ENV_BLANK"); got != "" {
+		t.Fatalf("GetEnvTrimmed(blank) = %q, want empty", got)
+	}
+	if got := GetEnvTrimmed("TEST_ENV_MISSING_XYZ"); got != "" {
+		t.Fatalf("GetEnvTrimmed(missing) = %q, want empty", got)
+	}
+}
+
+func TestParsePort(t *testing.T) {
+	if got := ParsePort("8080"); got != "8080" {
+		t.Fatalf("ParsePort(8080) = %q", got)
+	}
+	if got := ParsePort(":9090"); got != "9090" {
+		t.Fatalf("ParsePort(:9090) = %q", got)
+	}
+	if got := ParsePort(""); got != "" {
+		t.Fatalf("ParsePort(empty) = %q", got)
+	}
+	if got := ParsePort("abc"); got != "" {
+		t.Fatalf("ParsePort(abc) = %q", got)
+	}
+}
+
+func TestLooksLikeHostPort(t *testing.T) {
+	if !LooksLikeHostPort("127.0.0.1:8080") {
+		t.Fatal("expected host:port")
+	}
+	if LooksLikeHostPort("8080") {
+		t.Fatal("port only should be false")
+	}
+	if LooksLikeHostPort(":8080") {
+		t.Fatal("missing host should be false")
+	}
+}
+
+func TestReadSecretFile(t *testing.T) {
+	path := t.TempDir() + "/secret"
+	if err := os.WriteFile(path, []byte("  sekret \n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadSecretFile(path)
+	if err != nil {
+		t.Fatalf("ReadSecretFile: %v", err)
+	}
+	if got != "sekret" {
+		t.Fatalf("ReadSecretFile = %q", got)
+	}
+	if _, err := ReadSecretFile(path + "-missing"); err == nil {
+		t.Fatal("expected error for missing file")
 	}
 }
 

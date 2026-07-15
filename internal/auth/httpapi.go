@@ -27,7 +27,7 @@ const csrfCookieName = "csrf_token"
 // when the server issues a csrf_token cookie (needed for session POST/DELETE when CSRF is enabled).
 //
 // Precedence: explicit --token flag, then --login + password, then config/env token, else guest.
-func SetupAuthentication(cfg *config.Config) (*http.Client, string, string, error) {
+func SetupAuthentication(cfg *config.Config) (httpClient *http.Client, bearerToken, csrfToken string, err error) {
 	if cfg.TokenFlagProvided && strings.TrimSpace(cfg.Token) != "" {
 		return nil, strings.TrimSpace(cfg.Token), "", nil
 	}
@@ -89,7 +89,7 @@ func bootstrapCSRFCookie(client *http.Client, serverURL string) error {
 	u := strings.TrimRight(serverURL, "/") + "/auth/me"
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, http.NoBody)
 	if err != nil {
 		return fmt.Errorf("csrf bootstrap: %w", err)
 	}
@@ -98,7 +98,9 @@ func bootstrapCSRFCookie(client *http.Client, serverURL string) error {
 		return fmt.Errorf("csrf bootstrap: %w", err)
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
+	if _, err := io.Copy(io.Discard, resp.Body); err != nil {
+		return fmt.Errorf("csrf bootstrap: drain body: %w", err)
+	}
 	if resp.StatusCode >= http.StatusInternalServerError {
 		return fmt.Errorf("csrf bootstrap: server returned HTTP %d", resp.StatusCode)
 	}

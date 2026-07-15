@@ -41,14 +41,33 @@ linters-settings:
   errcheck:
     check-type-assertions: true
     check-blank: true
+  depguard:
+    rules:
+      client:
+        files:
+          - $all
+        allow:
+          - $gostd
+          - github.com/fortunnels/client
+          - github.com/gorilla/websocket
+          - github.com/pion/dtls/v3
+          - github.com/quic-go/quic-go
+          - github.com/stretchr/testify
+          - github.com/xtaci/smux
+          - golang.org/x/crypto
+          - gopkg.in/yaml.v3
 
 # "deadcode" is not a valid golangci-lint linter anymore (inactivated; use "unused" below).
 linters:
   enable:
     - bodyclose
+    - copyloopvar
+    - depguard
     - dogsled
     - dupl
     - errcheck
+    - errname
+    - errorlint
     - exhaustive
     - funlen
     - gci

@@ -15,11 +15,11 @@ import (
 	"sync"
 	"time"
 
-	protocolv1 "github.com/fortunnels/client/shared/protocol/v1"
 	"github.com/gorilla/websocket"
 
 	"github.com/fortunnels/client/internal/config"
 	"github.com/fortunnels/client/internal/dataplane"
+	protocolv1 "github.com/fortunnels/client/shared/protocol/v1"
 )
 
 var debugLogging = strings.Contains(
@@ -106,16 +106,6 @@ func (w *Watcher) ConnectWebSocketWithAuth(httpClient *http.Client, serverURL, t
 	w.startControlMessageReader(conn, ackCh, intervalCh, done, &doneOnce, runtime.WatchInterval)
 
 	dataplane.StartControlPingLoop(done, &doneOnce, conn, ticker, runtime.PingTimeout)
-}
-
-func runPingLoop(
-	conn *websocket.Conn,
-	ticker *time.Ticker,
-	pingTimeout time.Duration,
-	done chan struct{},
-	doneOnce *sync.Once,
-) {
-	dataplane.StartControlPingLoop(done, doneOnce, conn, ticker, pingTimeout)
 }
 
 func (w *Watcher) warnOnMissingAck(ackCh <-chan struct{}) {
@@ -261,20 +251,6 @@ func (w *Watcher) RunFallbackLifecyclePoller(httpClient *http.Client, serverURL,
 	}
 }
 
-// checkTunnelTerminalWithStatus returns (terminal, statusCode). statusCode is the
-// HTTP response status when non-terminal; 0 when request failed before response.
-//
-//nolint:unparam // tunnelID is required for API; unparam flags test-only call sites
-func checkTunnelTerminalWithStatus(client *http.Client, serverURL, tunnelID, bearer string) (terminal bool, statusCode int) {
-	terminal, _, statusCode = checkTunnelTerminalWithStatusImpl(client, serverURL, tunnelID, bearer)
-	return terminal, statusCode
-}
-
-func checkTunnelTerminal(client *http.Client, serverURL, tunnelID, bearer string) bool {
-	terminal, _, _ := checkTunnelTerminalWithStatusImpl(client, serverURL, tunnelID, bearer)
-	return terminal
-}
-
 func checkTunnelTerminalWithStatusImpl(client *http.Client, serverURL, tunnelID, bearer string) (terminal bool, status string, statusCode int) {
 	timeout := client.Timeout
 	if timeout <= 0 {
@@ -354,10 +330,6 @@ func (w *Watcher) printTunnelStatusChange(status string) {
 	default:
 		w.out.Printf("📨 Tunnel status changed on server: %s\n", status)
 	}
-}
-
-func checkTunnelDeleted(client *http.Client, serverURL, tunnelID string) bool {
-	return checkTunnelTerminal(client, serverURL, tunnelID, "")
 }
 
 func (w *Watcher) startControlMessageReader(
@@ -449,26 +421,6 @@ func (w *Watcher) handleControlMessage(
 	return false
 }
 
-func handleControlMessage(
-	msg map[string]interface{},
-	ackCh chan<- struct{},
-	intervalCh chan<- time.Duration,
-	done chan struct{},
-	doneOnce *sync.Once,
-	defaultWatchInterval time.Duration,
-	lastStatus *string,
-) bool {
-	return NewWatcher(nil).handleControlMessage(
-		envelopeFromMap(msg),
-		ackCh,
-		intervalCh,
-		done,
-		doneOnce,
-		defaultWatchInterval,
-		lastStatus,
-	)
-}
-
 func extractTunnelCloseReason(msg any) string {
 	var payload protocolv1.LifecycleEventPayload
 	switch v := msg.(type) {
@@ -484,24 +436,6 @@ func extractTunnelCloseReason(msg any) string {
 		}
 	}
 	return protocolv1.ReasonUnknown
-}
-
-func extractPayload(msg map[string]interface{}) map[string]interface{} {
-	payload, _ := msg["payload"].(map[string]interface{})
-	return payload
-}
-
-func envelopeFromMap(msg map[string]interface{}) protocolv1.Envelope {
-	envelope := protocolv1.Envelope{}
-	if msgType, ok := msg["type"].(string); ok {
-		envelope.Type = msgType
-	}
-	if payload, ok := msg["payload"]; ok {
-		if data, err := json.Marshal(payload); err == nil {
-			envelope.Payload = data
-		}
-	}
-	return envelope
 }
 
 func notifyAckReceived(ackCh chan<- struct{}) {

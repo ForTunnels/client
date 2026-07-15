@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"log"
 	"net"
 	"net/url"
@@ -101,7 +102,8 @@ func forwardUDPPacketsOverQUIC(
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
-			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+			var ne net.Error
+			if errors.As(err, &ne) && ne.Timeout() {
 				continue
 			}
 			cancel()

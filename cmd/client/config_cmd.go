@@ -50,12 +50,12 @@ func runConfigCheck() int {
 		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
 		return 1
 	}
-	if _, err := os.Stat(path); err != nil {
-		if os.IsNotExist(err) {
+	if _, statErr := os.Stat(path); statErr != nil {
+		if os.IsNotExist(statErr) {
 			fmt.Fprintf(os.Stderr, "No configuration file at %s\n", path)
 			return 1
 		}
-		fmt.Fprintf(os.Stderr, "❌ %v\n", err)
+		fmt.Fprintf(os.Stderr, "❌ %v\n", statErr)
 		return 1
 	}
 	fc, err := config.LoadFileConfig(path)

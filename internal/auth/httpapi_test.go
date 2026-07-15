@@ -8,9 +8,10 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/fortunnels/client/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/fortunnels/client/internal/config"
 )
 
 func TestSetupAuthentication_ExplicitTokenFlagWinsOverLogin(t *testing.T) {
