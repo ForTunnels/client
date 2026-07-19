@@ -3,6 +3,17 @@ SHELL := /bin/bash
 
 export GOWORK=off
 
+GOPATH_BIN := $(shell go env GOPATH)/bin
+
+GOFUMPT_VERSION := v0.7.0
+GOIMPORTS_VERSION := v0.31.0
+GOVULNCHECK_VERSION := v1.1.4
+STATICCHECK_VERSION := v0.6.1
+GOCYCLO_VERSION := v0.6.0
+GOLANGCI_LINT_VERSION := v1.64.8
+INEFFASSIGN_VERSION := v0.1.0
+MISSPELL_VERSION := v0.3.4
+
 BIN_DIR ?= ./bin
 ARTIFACTS_DIR ?= ./dist
 VERSION ?= dev
@@ -10,9 +21,20 @@ TARGET_OS := $(or $(GOOS),$(shell go env GOOS))
 BINARY_NAME := $(if $(filter windows,$(TARGET_OS)),client.msi,client)
 DEFAULT_SERVER_URL ?= https://fortunnels.ru
 
-.PHONY: all build build-fast test tidy clean release release-dev format lint security check
+.PHONY: all build build-fast test tidy clean release release-dev format format-check lint security check install-tools
 
 all: build
+
+install-tools:
+	@echo "==> Installing pinned Go tools (client)"
+	@go install mvdan.cc/gofumpt@$(GOFUMPT_VERSION)
+	@go install golang.org/x/tools/cmd/goimports@$(GOIMPORTS_VERSION)
+	@go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
+	@go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+	@go install honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION)
+	@go install github.com/gordonklaus/ineffassign@$(INEFFASSIGN_VERSION)
+	@go install github.com/client9/misspell/cmd/misspell@$(MISSPELL_VERSION)
+	@go install github.com/fzipp/gocyclo/cmd/gocyclo@$(GOCYCLO_VERSION)
 
 tidy:
 	@echo "==> go mod tidy (client)"
@@ -36,87 +58,52 @@ build-fast:
 clean:
 	rm -rf $(BIN_DIR) $(ARTIFACTS_DIR)
 
-format:
-	@if [ ! -x "$(shell go env GOPATH)/bin/gofumpt" ]; then \
-		echo "Installing gofumpt..."; \
-		go install mvdan.cc/gofumpt@latest; \
-	fi
-	@if [ ! -x "$(shell go env GOPATH)/bin/goimports" ]; then \
-		echo "Installing goimports..."; \
-		go install golang.org/x/tools/cmd/goimports@latest; \
-	fi
-	@GOWORK=off $(shell go env GOPATH)/bin/gofumpt -l -w .
-	@GOWORK=off $(shell go env GOPATH)/bin/goimports -w .
+format: install-tools
+	@echo "==> gofumpt + goimports (rewrite)"
+	@GOWORK=off $(GOPATH_BIN)/gofumpt -w .
+	@GOWORK=off $(GOPATH_BIN)/goimports -w .
 
-lint:
-	@if [ ! -x "$(shell go env GOPATH)/bin/golangci-lint" ]; then \
-		echo "Installing golangci-lint..."; \
-		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(shell go env GOPATH)/bin; \
+format-check: install-tools
+	@set -euo pipefail; \
+	echo "==> Checking formatting (read-only)"; \
+	unformatted=$$(GOWORK=off $(GOPATH_BIN)/gofumpt -l .); \
+	if [ -n "$$unformatted" ]; then \
+		echo "ERROR: Unformatted Go files (run 'make format'):"; \
+		echo "$$unformatted"; \
+		exit 1; \
+	fi; \
+	unimported=$$(GOWORK=off $(GOPATH_BIN)/goimports -l .); \
+	if [ -n "$$unimported" ]; then \
+		echo "ERROR: Go files with import issues (run 'make format'):"; \
+		echo "$$unimported"; \
+		exit 1; \
 	fi
-	@GOWORK=off $(shell go env GOPATH)/bin/golangci-lint run --config .golangci.yml
 
-security:
-	@if [ ! -x "$(shell go env GOPATH)/bin/govulncheck" ]; then \
-		echo "Installing govulncheck..."; \
-		go install golang.org/x/vuln/cmd/govulncheck@latest; \
-	fi
-	@GOWORK=off $(shell go env GOPATH)/bin/govulncheck ./...
+lint: install-tools
+	@GOWORK=off $(GOPATH_BIN)/golangci-lint run --config .golangci.yml
 
-check:
+security: install-tools
+	@GOWORK=off $(GOPATH_BIN)/govulncheck ./...
+
+check: install-tools format-check
 	@set -euo pipefail; \
 	echo "==> Running strict code checks (will fail build on any error)"; \
-	echo "Checking formatting..."; \
-	if [ ! -x "$(shell go env GOPATH)/bin/gofumpt" ]; then \
-		echo "Installing gofumpt..."; \
-		go install mvdan.cc/gofumpt@latest; \
-	fi; \
-	if [ ! -x "$(shell go env GOPATH)/bin/goimports" ]; then \
-		echo "Installing goimports..."; \
-		go install golang.org/x/tools/cmd/goimports@latest; \
-	fi; \
-	$(shell go env GOPATH)/bin/gofumpt -l -w .; \
-	$(shell go env GOPATH)/bin/goimports -w .; \
-	go fmt ./...; \
 	echo "Running go vet..."; \
 	go vet ./...; \
 	echo "Running tests..."; \
 	go test -v ./...; \
 	echo "Running golangci-lint..."; \
-	if [ ! -x "$(shell go env GOPATH)/bin/golangci-lint" ]; then \
-		echo "Installing golangci-lint..."; \
-		curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/master/install.sh | sh -s -- -b $(shell go env GOPATH)/bin; \
-	fi; \
-	$(shell go env GOPATH)/bin/golangci-lint run --config .golangci.yml; \
+	$(GOPATH_BIN)/golangci-lint run --config .golangci.yml; \
 	echo "Running security check..."; \
-	if [ ! -x "$(shell go env GOPATH)/bin/govulncheck" ]; then \
-		echo "Installing govulncheck..."; \
-		go install golang.org/x/vuln/cmd/govulncheck@latest; \
-	fi; \
-	$(shell go env GOPATH)/bin/govulncheck ./...; \
+	$(GOPATH_BIN)/govulncheck ./...; \
 	echo "Running staticcheck..."; \
-	if [ ! -x "$(shell go env GOPATH)/bin/staticcheck" ]; then \
-		echo "Installing staticcheck..."; \
-		go install honnef.co/go/tools/cmd/staticcheck@latest; \
-	fi; \
-	$(shell go env GOPATH)/bin/staticcheck ./...; \
+	$(GOPATH_BIN)/staticcheck ./...; \
 	echo "Checking for ineffectual assignments..."; \
-	if [ ! -x "$(shell go env GOPATH)/bin/ineffassign" ]; then \
-		echo "Installing ineffassign..."; \
-		go install github.com/gordonklaus/ineffassign@latest; \
-	fi; \
-	$(shell go env GOPATH)/bin/ineffassign ./...; \
+	$(GOPATH_BIN)/ineffassign ./...; \
 	echo "Checking for misspellings..."; \
-	if [ ! -x "$(shell go env GOPATH)/bin/misspell" ]; then \
-		echo "Installing misspell..."; \
-		go install github.com/client9/misspell/cmd/misspell@latest; \
-	fi; \
-	$(shell go env GOPATH)/bin/misspell -error .; \
+	$(GOPATH_BIN)/misspell -error .; \
 	echo "Checking cyclomatic complexity..."; \
-	if [ ! -x "$(shell go env GOPATH)/bin/gocyclo" ]; then \
-		echo "Installing gocyclo..."; \
-		go install github.com/fzipp/gocyclo/cmd/gocyclo@latest; \
-	fi; \
-	$(shell go env GOPATH)/bin/gocyclo -over 15 .; \
+	$(GOPATH_BIN)/gocyclo -over 15 .; \
 	echo "All checks passed"
 
 release: tidy
@@ -166,4 +153,3 @@ release: tidy
 
 release-dev:
 	$(MAKE) release VERSION=$(VERSION) DEFAULT_SERVER_URL=
-

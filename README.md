@@ -1,6 +1,6 @@
 # ForTunnels Client
 
-[![Go Version](https://img.shields.io/badge/go-1.25.3-blue.svg)](https://golang.org)
+[![Go Version](https://img.shields.io/badge/go-1.25.7-blue.svg)](https://golang.org)
 [![License](https://img.shields.io/badge/license-Proprietary-red.svg)](LICENSE)
 
 Standalone CLI client for creating secure tunnels through [ForTunnels](https://fortunnels.ru). Expose local HTTP/HTTPS, TCP, and UDP services to the internet in seconds.
@@ -21,7 +21,7 @@ ForTunnels Client is a command-line tool that connects to the ForTunnels server 
 
 ## Requirements
 
-- Go 1.22 or newer (for building from source)
+- Go 1.25.7 or newer (toolchain `go1.26.5`; see `go.mod`)
 - `make` (optional, for convenience targets)
 
 ## Installation
@@ -35,11 +35,14 @@ go build -o ./bin/client ./cmd/client
 # On Windows: go build -o ./bin/client.msi ./cmd/client
 ```
 
+The released CLI product name is **fortunnels** (see `make release` artifacts). A local `make build` writes `./bin/client` (or `./bin/client.msi` on Windows).
+
 Or via `make`:
 
 ```bash
 make build          # binary in ./bin/client (includes checks)
 make build-fast     # without tests/coverage
+make format         # rewrite sources (gofumpt + goimports)
 ```
 
 On Windows (or when cross-compiling with `GOOS=windows`), the binary is produced as `bin/client.msi` instead of `bin/client`.
@@ -52,7 +55,7 @@ make build BIN_DIR=../bin
 
 ### Download binaries
 
-Binaries for common platforms are available in [releases](https://github.com/fortunnels/client/releases).
+Binaries for common platforms are available on the [ForTunnels downloads page](https://fortunnels.ru/#downloads).
 
 On **Windows**, you can install from the [Chocolatey Community Repository](https://community.chocolatey.org/) when the package is available:
 
@@ -346,12 +349,14 @@ client/
 
 Project uses custom linter configuration (`.golangci.yml`) tuned for CLI apps:
 
-- `make check` - full checks (gofmt, go vet, tests, golangci-lint, govulncheck, staticcheck, ineffassign, misspell, gocyclo)
-- All checks run automatically on `make build`
+- `make format` - rewrite sources (`gofumpt -w`, `goimports -w`)
+- `make format-check` - read-only format gate (fails if sources need formatting)
+- `make check` - full checks (`format-check`, go vet, tests, golangci-lint, govulncheck, staticcheck, ineffassign, misspell, gocyclo)
+- All checks run automatically on `make build` (checks do not rewrite sources)
 
 Strictness highlights:
 
-- Cyclomatic complexity `gocyclo` limited to 12
+- Cyclomatic complexity `gocyclo` limited to 15 (`gocyclo -over 15`)
 - `funlen` max 80 lines and 60 statements per function
 - `lll` max line length 200
 - Duplicate finder (`dupl`) triggers at 50 tokens
