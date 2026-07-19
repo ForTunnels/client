@@ -98,7 +98,15 @@ Or with explicit flags:
 
 The server allocates a public TCP port. Connect to the displayed `tcp://host:port` URL from anywhere.
 
-### UDP tunnel (DNS)
+### UDP tunnel (expose-local)
+
+Expose a local UDP service (e.g. DNS, game server):
+
+```bash
+./bin/client udp 9000
+```
+
+### Advanced UDP (reverse mode)
 
 ```bash
 ./bin/client -protocol udp -udp-listen :5353 -udp-dst 127.0.0.1:53
@@ -125,6 +133,10 @@ The server allocates a public TCP port. Connect to the displayed `tcp://host:por
 - `-backoff-max` - max reconnect backoff (sec, default: 30)
 
 ### UDP mode
+
+**Default (expose-local):** `fortunnels udp <port>` forwards public UDP to your local service.
+
+**Advanced reverse mode** (both flags required):
 
 - `-udp-listen :PORT` - local UDP listen address (e.g. `:5353`)
 - `-udp-dst host:port` - server-side UDP destination (e.g. `127.0.0.1:53`)
@@ -225,6 +237,12 @@ Use the public URL to configure the webhook.
 ```
 
 ### UDP (DNS)
+
+```bash
+./bin/client udp 53
+```
+
+Advanced reverse mode:
 
 ```bash
 ./bin/client -protocol udp -udp-listen :5353 -udp-dst 127.0.0.1:53
