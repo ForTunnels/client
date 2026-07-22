@@ -67,11 +67,9 @@ type Config struct {
 	PSKFromStdin          bool
 	DPAuthTokenFromStdin  bool
 	DPAuthSecretFromStdin bool
-	AllowInsecureHTTP     bool
 	QUICPort              int
 	DTLSPort              int
 
-	ServerFlagProvided       bool
 	LoginFlagProvided        bool
 	TokenFlagProvided        bool
 	TokenFromConfigFile      bool
@@ -149,8 +147,6 @@ func Parse() (*Config, error) {
 	fs.StringVar(&cfg.TokenFile, "token-file", cfg.TokenFile, "Read bearer token from file")
 	fs.BoolVar(&cfg.PasswordFromStdin, "pass-stdin", cfg.PasswordFromStdin, "Read password from stdin")
 	fs.BoolVar(&cfg.TokenFromStdin, "token-stdin", cfg.TokenFromStdin, "Read bearer token from stdin")
-	fs.StringVar(&cfg.ServerURL, "server", cfg.ServerURL, "Server URL")
-	fs.BoolVar(&cfg.AllowInsecureHTTP, "allow-insecure-http", cfg.AllowInsecureHTTP, "Allow non-local HTTP server URL (unsafe)")
 	fs.StringVar(&cfg.TargetAddr, "local", cfg.TargetAddr, "Target address to tunnel")
 	fs.StringVar(&cfg.Protocol, "protocol", cfg.Protocol, "Protocol (http, https, tcp)")
 	fs.StringVar(&cfg.DataPlane, "dp", cfg.DataPlane, "Data-plane transport (ws|quic|dtls)")
@@ -182,9 +178,8 @@ func Parse() (*Config, error) {
 		return nil, err
 	}
 
-	localProvided, serverProvided, protocolProvided, secretFlags := detectFlagOverrides()
+	localProvided, protocolProvided, secretFlags := detectFlagOverrides()
 	clearSensitiveArgs(secretFlags)
-	cfg.ServerFlagProvided = serverProvided
 	cfg.LoginFlagProvided = secretFlags.login
 	cfg.TokenFlagProvided = secretFlags.token
 	cfg.PasswordFlagProvided = secretFlags.password
@@ -226,7 +221,7 @@ func GetProtocolConstants() (http, https, tcp, udp string) {
 // defaultConfig returns Config populated with CLI defaults.
 func defaultConfig() *Config {
 	return &Config{
-		ServerURL:      support.GetDefaultServerURL(defaultServerURL),
+		ServerURL:      defaultServerURL,
 		TargetAddr:     "localhost:3000",
 		Protocol:       protoHTTP,
 		DataPlane:      "ws",
@@ -319,7 +314,6 @@ func needsInlineValue(arg string, args []string, idx int) bool {
 }
 
 var booleanCLIArgs = map[string]struct{}{
-	"allow-insecure-http":  {},
 	"pass-stdin":           {},
 	"token-stdin":          {},
 	"watch":                {},
@@ -380,7 +374,7 @@ type secretFlagSet struct {
 	dpAuthSecret bool
 }
 
-func detectFlagOverrides() (localProvided, serverProvided, protocolProvided bool, secrets secretFlagSet) {
+func detectFlagOverrides() (localProvided, protocolProvided bool, secrets secretFlagSet) {
 	flagProvided := func(name string) bool {
 		for _, a := range os.Args[1:] {
 			if a == "-"+name ||
@@ -400,7 +394,7 @@ func detectFlagOverrides() (localProvided, serverProvided, protocolProvided bool
 		dpAuthToken:  flagProvided("dp-auth-token"),
 		dpAuthSecret: flagProvided("dp-auth-secret"),
 	}
-	return flagProvided("local"), flagProvided("server"), flagProvided("protocol"), secrets
+	return flagProvided("local"), flagProvided("protocol"), secrets
 }
 
 type secretSource struct {

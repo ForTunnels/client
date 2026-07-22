@@ -38,39 +38,6 @@ func TestIsBenignCopyError(t *testing.T) {
 	}
 }
 
-func TestGetDefaultServerURL(t *testing.T) {
-	// Save original env
-	originalEnv := os.Getenv("FORTUNNELS_SERVER_URL")
-	defer func() {
-		if originalEnv != "" {
-			os.Setenv("FORTUNNELS_SERVER_URL", originalEnv)
-		} else {
-			os.Unsetenv("FORTUNNELS_SERVER_URL")
-		}
-	}()
-
-	// Test with env var
-	os.Setenv("FORTUNNELS_SERVER_URL", "https://custom.example.com")
-	result := GetDefaultServerURL("https://default.example.com")
-	if result != "https://custom.example.com" {
-		t.Errorf("GetDefaultServerURL() with env = %q, want https://custom.example.com", result)
-	}
-
-	// Test without env var
-	os.Unsetenv("FORTUNNELS_SERVER_URL")
-	result = GetDefaultServerURL("https://default.example.com")
-	if result != "https://default.example.com" {
-		t.Errorf("GetDefaultServerURL() without env = %q, want https://default.example.com", result)
-	}
-
-	// Test with empty env var
-	os.Setenv("FORTUNNELS_SERVER_URL", "")
-	result = GetDefaultServerURL("https://default.example.com")
-	if result != "https://default.example.com" {
-		t.Errorf("GetDefaultServerURL() with empty env = %q, want https://default.example.com", result)
-	}
-}
-
 func TestToUint32Size(t *testing.T) {
 	tests := []struct {
 		name    string

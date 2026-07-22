@@ -34,16 +34,6 @@ func IsBenignCopyError(err error) bool {
 	return false
 }
 
-// getDefaultServerURL returns the default server URL taking environment override into account.
-// 1) env FORTUNNELS_SERVER_URL if set
-// 2) compiled defaultServerURL (can be overridden via -ldflags)
-func GetDefaultServerURL(defaultServerURL string) string {
-	if v := os.Getenv("FORTUNNELS_SERVER_URL"); strings.TrimSpace(v) != "" {
-		return v
-	}
-	return defaultServerURL
-}
-
 // GetEnvTrimmed returns a trimmed environment variable value or empty string.
 func GetEnvTrimmed(name string) string {
 	if v := os.Getenv(name); strings.TrimSpace(v) != "" {

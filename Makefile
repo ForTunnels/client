@@ -47,13 +47,13 @@ test:
 build: check
 	@echo "==> go build (client)"
 	mkdir -p $(BIN_DIR)
-	go build -ldflags "-X main.version=$(VERSION)" -o $(BIN_DIR)/$(BINARY_NAME) ./cmd/client
+	go build -ldflags "-X main.version=$(VERSION) -X main.defaultServerURL=$(DEFAULT_SERVER_URL)" -o $(BIN_DIR)/$(BINARY_NAME) ./cmd/client
 
 
 build-fast:
 	@echo "==> go build (client, fast)"
 	mkdir -p $(BIN_DIR)
-	go build -trimpath -ldflags "-X main.version=$(VERSION)" -o $(BIN_DIR)/$(BINARY_NAME) ./cmd/client
+	go build -trimpath -ldflags "-X main.version=$(VERSION) -X main.defaultServerURL=$(DEFAULT_SERVER_URL)" -o $(BIN_DIR)/$(BINARY_NAME) ./cmd/client
 
 clean:
 	rm -rf $(BIN_DIR) $(ARTIFACTS_DIR)
@@ -152,4 +152,4 @@ release: tidy
 	echo "==> Artifacts saved to $(ARTIFACTS_DIR)"
 
 release-dev:
-	$(MAKE) release VERSION=$(VERSION) DEFAULT_SERVER_URL=
+	$(MAKE) release VERSION=$(VERSION) DEFAULT_SERVER_URL="$(DEFAULT_SERVER_URL)"

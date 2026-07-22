@@ -94,9 +94,7 @@ func TestSetDefaultServerURL(t *testing.T) {
 
 func TestDefaultConfig(t *testing.T) {
 	cfg := defaultConfig()
-	if cfg.ServerURL == "" {
-		t.Error("defaultConfig() ServerURL should not be empty")
-	}
+	assert.Equal(t, "https://fortunnels.ru", cfg.ServerURL)
 	if cfg.Protocol != protoHTTP {
 		t.Errorf("defaultConfig() Protocol = %q, want %q", cfg.Protocol, protoHTTP)
 	}
@@ -110,6 +108,15 @@ func TestDefaultConfig(t *testing.T) {
 		t.Errorf("defaultConfig() PSK should be empty, got %q", cfg.PSK)
 	}
 	// TCP default mode: expose-local (serve-incoming)
+}
+
+func TestDefaultConfigIgnoresRuntimeServerEnvironment(t *testing.T) {
+	original := defaultServerURL
+	t.Cleanup(func() { defaultServerURL = original })
+	defaultServerURL = "https://fortunnels.ru"
+	t.Setenv("FORTUNNELS_SERVER_URL", "https://custom.example.com")
+
+	assert.Equal(t, "https://fortunnels.ru", defaultConfig().ServerURL)
 }
 
 func TestProcessPositionalArgs_TCPPort(t *testing.T) {
@@ -175,6 +182,18 @@ func TestParse_AcceptsProtocolThenPort(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, protoTCP, cfg.Protocol)
 	assert.Equal(t, "127.0.0.1:5433", cfg.TargetAddr)
+}
+
+func TestParseRejectsRemovedEndpointFlags(t *testing.T) {
+	for _, args := range [][]string{
+		{"client", "-server", "https://example.com"},
+		{"client", "--server", "https://example.com"},
+		{"client", "--allow-insecure-http"},
+	} {
+		_, err := testParseWithArgs(t, args)
+		require.Error(t, err)
+		assert.ErrorContains(t, err, "flag provided but not defined")
+	}
 }
 
 func TestParse_RejectsTooManyPositionals(t *testing.T) {

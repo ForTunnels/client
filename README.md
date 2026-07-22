@@ -119,7 +119,6 @@ Expose a local UDP service (e.g. DNS, game server):
 
 ### General options
 
-- `-allow-insecure-http` - allow insecure HTTP for non-local addresses (not recommended)
 - `-local` - local service address to forward (e.g. `127.0.0.1:8000`)
 - `-protocol http|https|tcp|udp` - tunnel protocol
 - `-user` - user identifier (for audit/quotas, default: `default`)
@@ -197,8 +196,6 @@ Short forms are supported:
 
 - All connections to the server use HTTPS (TLS 1.2+)
 - Server certificate validation is enabled by default
-- Auto-configuration is used for local development (`localhost`/`127.0.0.1`)
-- HTTP for non-local addresses is blocked without `-allow-insecure-http`
 
 ### Stream encryption
 

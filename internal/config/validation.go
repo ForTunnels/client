@@ -19,7 +19,7 @@ func Validate(cfg *Config) error {
 	if err := validateProtocolFlag(cfg.Protocol); err != nil {
 		return err
 	}
-	if err := validateServerURLFlag(cfg.ServerURL, cfg.ServerFlagProvided, cfg.AllowInsecureHTTP); err != nil {
+	if err := validateServerURL(cfg.ServerURL); err != nil {
 		return err
 	}
 	if err := validateTargetAddressIfNeeded(cfg); err != nil {
@@ -65,20 +65,34 @@ func validateProtocolFlag(protocol string) error {
 	}
 }
 
-func validateServerURLFlag(serverURL string, serverFlagProvided, allowInsecureHTTP bool) error {
-	if serverFlagProvided &&
-		!strings.HasPrefix(serverURL, "http://") &&
-		!strings.HasPrefix(serverURL, "https://") {
-		return fmt.Errorf("missing protocol in --server (use http:// or https://)\n   Example: --server http://127.0.0.1:8080")
-	}
+func validateServerURL(serverURL string) error {
 	u, err := url.Parse(serverURL)
 	if err != nil || u.Scheme == "" || u.Host == "" {
-		return fmt.Errorf("invalid server URL\n   Try: --server http://127.0.0.1:8080")
+		return fmt.Errorf("invalid configured server URL")
 	}
-	if strings.EqualFold(u.Scheme, "http") && !allowInsecureHTTP && !isLocalServerHost(u.Host) {
-		return fmt.Errorf("insecure HTTP server URL is blocked\n   Use https:// or pass --allow-insecure-http for non-local HTTP")
+
+	switch strings.ToLower(u.Scheme) {
+	case "https":
+		return nil
+	case "http":
+		if isLocalServerHost(u.Hostname()) {
+			return nil
+		}
+		return fmt.Errorf("insecure HTTP configured server URL is only allowed for local development")
+	default:
+		return fmt.Errorf("unsupported configured server URL scheme %q; use https://", u.Scheme)
 	}
-	return nil
+}
+
+func isLocalServerHost(host string) bool {
+	host = strings.ToLower(strings.TrimSuffix(host, "."))
+	switch host {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	default:
+		// Docker Compose and other local test stacks use single-label service names.
+		return !strings.Contains(host, ".")
+	}
 }
 
 func validateTargetAddressIfNeeded(cfg *Config) error {
@@ -123,28 +137,6 @@ func enforceEncryptionRequirements(cfg *Config) error {
 		return fmt.Errorf("PSK is too short\n   Use at least 32 characters for --psk")
 	}
 	return nil
-}
-
-func isLocalServerHost(host string) bool {
-	if host == "" {
-		return false
-	}
-	h := host
-	if strings.HasPrefix(h, "[") && strings.Contains(h, "]") {
-		h = strings.TrimPrefix(h, "[")
-		h = strings.SplitN(h, "]", 2)[0]
-	}
-	if strings.Contains(h, ":") {
-		if splitHost, _, err := net.SplitHostPort(h); err == nil {
-			h = splitHost
-		}
-	}
-	switch strings.ToLower(h) {
-	case "localhost", "127.0.0.1", "::1":
-		return true
-	default:
-		return false
-	}
 }
 
 func warnOnSensitiveFlagUsage(cfg *Config) {
