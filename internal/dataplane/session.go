@@ -133,8 +133,8 @@ type Manager struct {
 	tunnelID    string
 	dpAuthToken string
 	mu          sync.Mutex
-	conn        *websocket.Conn
-	sess        *smux.Session
+	conn        dataPlaneConn
+	sess        dataPlaneSession
 	pingDone    chan struct{}
 	pingTicker  *time.Ticker
 	stopped     bool
@@ -154,7 +154,18 @@ func NewManager(serverURL, tunnelID, dpAuthToken string, boInit, boMax time.Dura
 	}
 }
 
-func (m *Manager) EnsureSession() (*smux.Session, error) {
+type dataPlaneConn interface {
+	Close() error
+}
+
+type dataPlaneSession interface {
+	AcceptStream() (*smux.Stream, error)
+	OpenStream() (*smux.Stream, error)
+	IsClosed() bool
+	Close() error
+}
+
+func (m *Manager) EnsureSession() (dataPlaneSession, error) {
 	m.mu.Lock()
 	if m.stopped {
 		m.mu.Unlock()

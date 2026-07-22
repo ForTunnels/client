@@ -14,7 +14,12 @@ import (
 	"github.com/fortunnels/client/shared/wsconn"
 )
 
-func configureWSReadKeepalive(conn *websocket.Conn) {
+type wsKeepaliveConn interface {
+	SetReadDeadline(time.Time) error
+	SetPongHandler(func(string) error)
+}
+
+func configureWSReadKeepalive(conn wsKeepaliveConn) {
 	//nolint:errcheck // best-effort read deadline
 	_ = conn.SetReadDeadline(time.Now().Add(wsReadTimeout))
 	conn.SetPongHandler(func(string) error {

@@ -22,21 +22,30 @@ const (
 // It reads and writes only binary frames, ignoring non-binary messages.
 // SECURITY: Includes message size validation to prevent DoS attacks.
 type WSConn struct {
-	conn       *websocket.Conn
+	conn       Transport
 	readMu     sync.Mutex
 	writeMu    sync.Mutex
 	currReader io.Reader
 }
 
-// NewWSConn constructs a new WSConn adapter for the provided *websocket.Conn.
-func NewWSConn(c *websocket.Conn) *WSConn {
+// Transport is the WebSocket surface WSConn needs from the underlying connection.
+type Transport interface {
+	SetReadLimit(int64)
+	NextReader() (int, io.Reader, error)
+	NextWriter(int) (io.WriteCloser, error)
+	WriteMessage(int, []byte) error
+	Close() error
+}
+
+// NewWSConn constructs a new WSConn adapter for the provided WebSocket connection.
+func NewWSConn(c Transport) *WSConn {
 	// SECURITY: Set maximum message size limits
 	c.SetReadLimit(MaxWebSocketMessageSize)
 	return &WSConn{conn: c}
 }
 
 // NewClientWSConn mirrors NewWSConn but keeps backwards compatibility.
-func NewClientWSConn(c *websocket.Conn) *WSConn { return NewWSConn(c) }
+func NewClientWSConn(c Transport) *WSConn { return NewWSConn(c) }
 
 // Read returns data from the current binary message reader, advancing to the
 // next binary frame as needed. It skips non-binary frames transparently.
