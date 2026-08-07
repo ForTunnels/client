@@ -41,8 +41,8 @@ tidy:
 	go mod tidy
 
 test:
-	@echo "==> go test ./..."
-	go test ./...
+	@echo "==> go test -race ./..."
+	go test -race ./...
 
 build: check
 	@echo "==> go build (client)"
