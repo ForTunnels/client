@@ -48,6 +48,10 @@ func main() {
 		os.Exit(runConfigCommand(os.Args[2:]))
 	}
 
+	if len(os.Args) > 1 && os.Args[1] == "webhook" {
+		os.Exit(runWebhookCommand(os.Args[2:]))
+	}
+
 	cfg, err := parseConfig()
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
