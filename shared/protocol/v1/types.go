@@ -116,6 +116,7 @@ type Tunnel struct {
 	UserID                int64     `json:"user_id,omitempty"`
 	OwnerLogin            string    `json:"owner_login,omitempty"`
 	Protocol              string    `json:"protocol"`
+	Kind                  string    `json:"kind,omitempty"`
 	TargetAddr            string    `json:"target_addr"`
 	PublicURL             string    `json:"public_url"`
 	Status                string    `json:"status"`

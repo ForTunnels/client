@@ -256,6 +256,36 @@ func nextBackoff(current, limit time.Duration) time.Duration {
 	return next
 }
 
+// resetSession drops a failed smux session so the next EnsureSession call dials
+// a fresh data-plane connection. AcceptStream can fail before smux reports the
+// session as closed, so relying on IsClosed alone can leave the serve loop
+// spinning forever on a session the server closed during pause.
+func (m *Manager) resetSession() {
+	m.mu.Lock()
+	sess := m.sess
+	conn := m.conn
+	pingDone := m.pingDone
+	pingTicker := m.pingTicker
+	m.sess = nil
+	m.conn = nil
+	m.pingDone = nil
+	m.pingTicker = nil
+	m.mu.Unlock()
+
+	if pingDone != nil {
+		close(pingDone)
+	}
+	if pingTicker != nil {
+		pingTicker.Stop()
+	}
+	if sess != nil {
+		_ = sess.Close()
+	}
+	if conn != nil {
+		_ = conn.Close()
+	}
+}
+
 func (m *Manager) Close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()

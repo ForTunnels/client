@@ -6,7 +6,7 @@ toolchain go1.26.6
 
 require (
 	github.com/gorilla/websocket v1.5.3
-	github.com/pion/dtls/v3 v3.1.3
+	github.com/pion/dtls/v3 v3.1.5
 	github.com/quic-go/quic-go v0.59.1
 	github.com/stretchr/testify v1.11.1
 	github.com/xtaci/smux v1.5.57

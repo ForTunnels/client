@@ -46,7 +46,6 @@ func NewBackendStateReporter() BackendStateReporter {
 	}
 }
 
-//nolint:dupl // TCP and UDP incoming serve loops share the same session accept pattern.
 func StartDataPlaneServeIncoming(serverURL, tunnelID string, runtime config.RuntimeSettings, reporter BackendStateReporter, dpAuthToken string) error {
 	mgr := NewManager(serverURL, tunnelID, dpAuthToken, time.Second, 30*time.Second, runtime)
 	defer mgr.Close()
@@ -58,7 +57,10 @@ func StartDataPlaneServeIncoming(serverURL, tunnelID string, runtime config.Runt
 		}
 		st, err := sess.AcceptStream()
 		if err != nil {
-			// session likely closed; retry loop will recreate
+			// The server closes the session when a tunnel is paused. smux may not
+			// report IsClosed yet, so explicitly discard the failed session before
+			// the retry loop asks for a replacement.
+			mgr.resetSession()
 			time.Sleep(reconnectRetryDelay)
 			continue
 		}
