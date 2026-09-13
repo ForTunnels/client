@@ -5,47 +5,78 @@ package dataplane
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"log"
 	"net"
 	"net/url"
+	"sync"
 	"time"
 
 	"github.com/quic-go/quic-go"
 )
 
-const udpReadPollInterval = time.Second
+const (
+	udpReadPollInterval = time.Second
+	udpTransport        = "udp"
+)
 
 // startQUICDataPlaneUDP listens on udpListen and forwards via QUIC datagrams, receiving replies
 func StartQUICDataPlaneUDP(serverURL, quicPort, tunnelID, authToken, udpDst, udpListen string) error {
-	laddr, err := net.ResolveUDPAddr("udp", udpListen)
-	if err != nil {
-		return err
-	}
-	uc, err := net.ListenUDP("udp", laddr)
-	if err != nil {
-		return err
-	}
-	defer uc.Close()
+	return StartQUICDataPlaneUDPContext(context.Background(), serverURL, quicPort, tunnelID, authToken, udpDst, udpListen)
+}
 
-	qc, err := dialQUICConnection(serverURL, quicPort, true)
+func StartQUICDataPlaneUDPContext(ctx context.Context, serverURL, quicPort, tunnelID, authToken, udpDst, udpListen string) error {
+	return startQUICDataPlaneUDPContext(ctx, serverURL, quicPort, tunnelID, authToken, udpDst, udpListen, "")
+}
+
+func startQUICDataPlaneUDPContext(
+	ctx context.Context,
+	serverURL, quicPort, tunnelID, authToken, udpDst, udpListen, transportCAPath string,
+) error {
+	laddr, err := net.ResolveUDPAddr(udpTransport, udpListen)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if err := qc.CloseWithError(0, ""); err != nil {
-			log.Printf("Error closing QUIC connection: %v", err)
+	uc, err := net.ListenUDP(udpTransport, laddr)
+	if err != nil {
+		return err
+	}
+
+	qc, err := dialQUICConnectionWithCA(serverURL, quicPort, true, transportCAPath)
+	if err != nil {
+		return err
+	}
+	var closeOnce sync.Once
+	closeResources := func() {
+		closeOnce.Do(func() {
+			_ = uc.Close()
+			if closeErr := qc.CloseWithError(0, ""); closeErr != nil {
+				log.Printf("Error closing QUIC connection: %v", closeErr)
+			}
+		})
+	}
+	defer closeResources()
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	stopCloser := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			closeResources()
+		case <-stopCloser:
 		}
 	}()
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	defer close(stopCloser)
 
 	flows := newFlowRegistry()
 	startQUICDatagramReceiver(ctx, cancel, qc, uc, flows)
-	return forwardUDPPacketsOverQUIC(ctx, cancel, qc, uc, tunnelID, authToken, udpDst, flows)
+	err = forwardUDPPacketsOverQUIC(ctx, cancel, qc, uc, tunnelID, authToken, udpDst, flows)
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
 }
 
 func startQUICDatagramReceiver(
@@ -71,7 +102,7 @@ func startQUICDatagramReceiver(
 				Protocol string `json:"protocol"`
 				Data     []byte `json:"data"`
 			}
-			if json.Unmarshal(b, &fr) == nil && fr.Protocol == "udp" && len(fr.Data) > 0 {
+			if json.Unmarshal(b, &fr) == nil && fr.Protocol == udpTransport && len(fr.Data) > 0 {
 				if ra, ok := flows.get(fr.FlowID); ok {
 					//nolint:errcheck // best-effort UDP forward
 					_, _ = uc.WriteToUDP(fr.Data, ra)
@@ -114,7 +145,7 @@ func forwardUDPPacketsOverQUIC(
 		frame := map[string]interface{}{
 			"tunnel_id": tunnelID,
 			"flow_id":   flowID,
-			"protocol":  "udp",
+			"protocol":  udpTransport,
 			"data":      buf[:n],
 			"dst":       udpDst,
 			"auth":      authToken,
@@ -139,16 +170,18 @@ func timeFromContext(ctx context.Context) time.Time {
 }
 
 func dialQUICConnection(serverURL, port string, enableDatagrams bool) (*quic.Conn, error) {
+	return dialQUICConnectionWithCA(serverURL, port, enableDatagrams, "")
+}
+
+func dialQUICConnectionWithCA(serverURL, port string, enableDatagrams bool, transportCAPath string) (*quic.Conn, error) {
 	u, err := url.Parse(serverURL)
 	if err != nil {
 		return nil, err
 	}
 	host := net.JoinHostPort(u.Hostname(), port)
-	tlsConf := &tls.Config{
-		InsecureSkipVerify: false,
-		MinVersion:         tls.VersionTLS12,
-		NextProtos:         []string{"fortunnels-quic"},
-		ServerName:         u.Hostname(),
+	tlsConf, err := newTransportTLSConfig(serverURL, transportCAPath)
+	if err != nil {
+		return nil, err
 	}
 	quicCfg := &quic.Config{}
 	if enableDatagrams {

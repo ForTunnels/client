@@ -43,7 +43,25 @@ const (
 )
 
 type Watcher struct {
-	out Output
+	out        Output
+	onTerminal func(error)
+}
+
+// TrafficQuotaError is terminal for the current CLI invocation. A new
+// invocation may proceed after the allowance resets or the plan changes.
+type TrafficQuotaError struct {
+	ResetAt time.Time
+}
+
+func (e *TrafficQuotaError) Error() string { return MonthlyTrafficLimitMessage(e.ResetAt) }
+
+func MonthlyTrafficLimitMessage(resetAt time.Time) string {
+	if resetAt.IsZero() {
+		return "Monthly traffic limit reached (incoming + outgoing). Change your plan. Reconnecting or creating another tunnel will not reset this account's allowance."
+	}
+	return "Monthly traffic limit reached (incoming + outgoing). Wait until " +
+		resetAt.UTC().Format(time.RFC3339) +
+		" or change your plan. Reconnecting or creating another tunnel will not reset this account's allowance."
 }
 
 func NewWatcher(out Output) *Watcher {
@@ -51,6 +69,12 @@ func NewWatcher(out Output) *Watcher {
 		out = StdOutput{}
 	}
 	return &Watcher{out: out}
+}
+
+func NewLifecycleWatcher(out Output, onTerminal func(error)) *Watcher {
+	w := NewWatcher(out)
+	w.onTerminal = onTerminal
+	return w
 }
 
 func detectAuthMode(client *http.Client, bearer string) authMode {
@@ -74,6 +98,56 @@ func ConnectWebSocket(serverURL, tunnelID string, runtime config.RuntimeSettings
 // provided with a cookie jar (session auth), fallback HTTP polls use it for auth.
 func ConnectWebSocketWithAuth(httpClient *http.Client, serverURL, tunnelID, bearer string, runtime config.RuntimeSettings) {
 	NewWatcher(nil).ConnectWebSocketWithAuth(httpClient, serverURL, tunnelID, bearer, runtime)
+}
+
+// RunLifecycleWatch feeds terminal control-plane events to the shared CLI
+// coordinator. It owns the WebSocket until the command is canceled or the
+// server sends a terminal event.
+func RunLifecycleWatch(
+	ctx context.Context,
+	httpClient *http.Client,
+	serverURL, tunnelID, bearer string,
+	runtime config.RuntimeSettings,
+	onTerminal func(error),
+) {
+	w := NewLifecycleWatcher(nil, onTerminal)
+	conn, resp, err := dialControlWebSocket(httpClient, serverURL, tunnelID, bearer)
+	if resp != nil && resp.Body != nil {
+		defer resp.Body.Close()
+	}
+	if err != nil {
+		logDebug("lifecycle WebSocket unavailable: %v", err)
+		return
+	}
+	defer conn.Close()
+
+	closed := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.Close()
+		case <-closed:
+		}
+	}()
+	defer close(closed)
+
+	ackCh := make(chan struct{}, 1)
+	intervalCh := make(chan time.Duration, 1)
+	done := make(chan struct{})
+	var doneOnce sync.Once
+	lastStatus := statusActive
+	for {
+		var msg protocolv1.Envelope
+		if readErr := conn.ReadJSON(&msg); readErr != nil {
+			if ctx.Err() == nil {
+				logWebSocketReadError(readErr)
+			}
+			return
+		}
+		if w.handleControlMessage(msg, ackCh, intervalCh, done, &doneOnce, runtime.WatchInterval, &lastStatus) {
+			return
+		}
+	}
 }
 
 // ConnectWebSocketWithAuth connects a control-plane WebSocket with optional bearer token
@@ -251,23 +325,73 @@ func (w *Watcher) RunFallbackLifecyclePoller(httpClient *http.Client, serverURL,
 	}
 }
 
+// RunFallbackLifecyclePollerWithReason is the authenticated canonical-indicator
+// fallback used by the CLI serving loops. The callback receives a non-nil
+// TrafficQuotaError only for combined monthly traffic exhaustion.
+func RunFallbackLifecyclePollerWithReason(
+	httpClient *http.Client,
+	serverURL, tunnelID, bearer string,
+	onTerminal func(error),
+	interval time.Duration,
+) {
+	RunFallbackLifecyclePollerWithReasonContext(context.Background(), httpClient, serverURL, tunnelID, bearer, onTerminal, interval)
+}
+
+// RunFallbackLifecyclePollerWithReasonContext is the cancellation-aware form
+// used by serving commands. Polling stops as soon as another signal wins.
+func RunFallbackLifecyclePollerWithReasonContext(
+	ctx context.Context,
+	httpClient *http.Client,
+	serverURL, tunnelID, bearer string,
+	onTerminal func(error),
+	interval time.Duration,
+) {
+	client := ensurePollClient(httpClient)
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			terminal, _, _, terminalErr := checkTunnelTerminalDetailedContext(ctx, client, serverURL, tunnelID, bearer)
+			if terminal {
+				onTerminal(terminalErr)
+				return
+			}
+		}
+	}
+}
+
 func checkTunnelTerminalWithStatusImpl(client *http.Client, serverURL, tunnelID, bearer string) (terminal bool, status string, statusCode int) {
+	terminal, status, statusCode, err := checkTunnelTerminalDetailed(client, serverURL, tunnelID, bearer)
+	if err != nil {
+		logDebug("fallback status check failed: %v", err)
+	}
+	return terminal, status, statusCode
+}
+
+func checkTunnelTerminalDetailed(client *http.Client, serverURL, tunnelID, bearer string) (terminal bool, status string, statusCode int, terminalErr error) {
+	return checkTunnelTerminalDetailedContext(context.Background(), client, serverURL, tunnelID, bearer)
+}
+
+func checkTunnelTerminalDetailedContext(parent context.Context, client *http.Client, serverURL, tunnelID, bearer string) (terminal bool, status string, statusCode int, terminalErr error) {
 	timeout := client.Timeout
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, "GET", serverURL+"/api/tunnels?id="+tunnelID, http.NoBody)
 	if err != nil {
-		return false, "", 0
+		return false, "", 0, nil
 	}
 	if strings.TrimSpace(bearer) != "" {
 		req.Header.Set("Authorization", "Bearer "+bearer)
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return false, "", 0
+		return false, "", 0, nil
 	}
 	defer resp.Body.Close()
 
@@ -275,22 +399,48 @@ func checkTunnelTerminalWithStatusImpl(client *http.Client, serverURL, tunnelID,
 	// Treat as terminal immediately; no failure counters or WARN spam.
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		logDebug("%d from GET /api/tunnels → terminal (tunnel removed or access revoked)", resp.StatusCode)
-		return true, "", resp.StatusCode
+		return true, "", resp.StatusCode, nil
 	}
 
 	var payload protocolv1.TunnelListResponse
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return false, "", resp.StatusCode
+		return false, "", resp.StatusCode, nil
 	}
 	status = tunnelStatusFromPayload(payload)
+	if quotaErr := trafficQuotaErrorFromPayload(payload, tunnelID); quotaErr != nil {
+		return true, status, resp.StatusCode, quotaErr
+	}
 
 	if !payload.Exists {
-		return true, status, resp.StatusCode
+		return true, status, resp.StatusCode, nil
 	}
 	if status == StatusExpired {
-		return true, status, resp.StatusCode
+		return true, status, resp.StatusCode, nil
 	}
-	return false, status, resp.StatusCode
+	return false, status, resp.StatusCode, nil
+}
+
+func trafficQuotaErrorFromPayload(payload protocolv1.TunnelListResponse, tunnelID string) error {
+	for i := range payload.Tunnels {
+		tunnel := &payload.Tunnels[i]
+		if tunnelID != "" && tunnel.ID != "" && tunnel.ID != tunnelID {
+			continue
+		}
+		if tunnel.LimitIndicators == nil {
+			continue
+		}
+		indicators := tunnel.LimitIndicators
+		if indicators.Traffic.State != protocolv1.LimitIndicatorStateExhausted &&
+			indicators.MonthlyEgress.State != protocolv1.LimitIndicatorStateExhausted {
+			continue
+		}
+		resetAt := time.Time{}
+		if indicators.MonthlyEgress.ResetAt != nil {
+			resetAt = indicators.MonthlyEgress.ResetAt.UTC()
+		}
+		return &TrafficQuotaError{ResetAt: resetAt}
+	}
+	return nil
 }
 
 func tunnelStatusFromPayload(payload any) string {
@@ -386,16 +536,31 @@ func (w *Watcher) handleControlMessage(
 	case protocolv1.MessageTypePong:
 		w.out.Printf("💓 Ping received at %s\n", time.Now().Format("15:04:05"))
 	case protocolv1.EventTunnelClosed:
-		reason := extractTunnelCloseReason(msg)
+		payload := decodeTunnelClosePayload(msg)
+		reason := payload.Reason
 		logDebug("tunnel_closed reason=%s", reason)
-		w.out.Println(MsgTunnelRemovedExiting)
+		var terminalErr error
+		if reason == protocolv1.ReasonMonthlyTraffic {
+			terminalErr = TrafficQuotaErrorFromLifecycle(payload)
+		} else {
+			terminalErr = newTunnelRemovedError()
+		}
+		if w.onTerminal != nil {
+			w.onTerminal(terminalErr)
+		} else {
+			w.out.Println(terminalErr.Error())
+		}
 		doneOnce.Do(func() { close(done) })
 		return true
 	case protocolv1.EventTunnelUpdated:
 		var payload protocolv1.LifecycleEventPayload
 		if err := msg.DecodePayload(&payload); err == nil {
 			if payload.Status == StatusExpired {
-				w.out.Println(MsgTunnelRemovedExiting)
+				if w.onTerminal != nil {
+					w.onTerminal(newTunnelRemovedError())
+				} else {
+					w.out.Println(MsgTunnelRemovedExiting)
+				}
 				doneOnce.Do(func() { close(done) })
 				return true
 			}
@@ -421,21 +586,15 @@ func (w *Watcher) handleControlMessage(
 	return false
 }
 
-func extractTunnelCloseReason(msg any) string {
+func decodeTunnelClosePayload(msg protocolv1.Envelope) protocolv1.LifecycleEventPayload {
 	var payload protocolv1.LifecycleEventPayload
-	switch v := msg.(type) {
-	case protocolv1.Envelope:
-		if err := v.DecodePayload(&payload); err == nil && payload.Reason != "" {
-			return payload.Reason
-		}
-	case map[string]interface{}:
-		if raw, ok := v["payload"].(map[string]interface{}); ok {
-			if reason, ok := raw["reason"].(string); ok && reason != "" {
-				return reason
-			}
-		}
+	if err := msg.DecodePayload(&payload); err != nil {
+		logDebug("decode tunnel_closed payload: %v", err)
 	}
-	return protocolv1.ReasonUnknown
+	if payload.Reason == "" {
+		payload.Reason = protocolv1.ReasonUnknown
+	}
+	return payload
 }
 
 func notifyAckReceived(ackCh chan<- struct{}) {

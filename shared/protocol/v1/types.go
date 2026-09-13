@@ -24,6 +24,7 @@ const (
 	ReasonClosedByClient     = "closed_by_client"
 	ReasonClientDisconnected = "client_disconnected"
 	ReasonExpired            = "expired"
+	ReasonMonthlyTraffic     = "monthly_traffic"
 	ReasonUnknown            = "unknown"
 )
 
@@ -39,9 +40,11 @@ const (
 )
 
 type LimitIndicators struct {
-	AsOf          time.Time                   `json:"as_of"`
-	Lifetime      LifetimeLimitIndicator      `json:"lifetime"`
-	Traffic       TrafficLimitIndicator       `json:"traffic"`
+	AsOf           time.Time                   `json:"as_of"`
+	Lifetime       LifetimeLimitIndicator      `json:"lifetime"`
+	Traffic        TrafficLimitIndicator       `json:"traffic"`
+	MonthlyTraffic MonthlyEgressLimitIndicator `json:"monthly_traffic"`
+	// MonthlyEgress is the deprecated wire alias retained for older clients.
 	MonthlyEgress MonthlyEgressLimitIndicator `json:"monthly_egress"`
 	HTTPRPM       HTTPRPMLimitIndicator       `json:"http_rpm"`
 }
@@ -206,14 +209,23 @@ type PongPayload struct {
 }
 
 type ErrorPayload struct {
+	Code    string `json:"code,omitempty"`
 	Message string `json:"message"`
 }
 
+// APIError is the bounded JSON error contract used by control-plane endpoints.
+type APIError struct {
+	Error   string `json:"error,omitempty"`
+	Code    string `json:"code,omitempty"`
+	Message string `json:"message,omitempty"`
+}
+
 type LifecycleEventPayload struct {
-	TunnelID  string `json:"tunnel_id"`
-	Status    string `json:"status,omitempty"`
-	PublicURL string `json:"public_url,omitempty"`
-	Reason    string `json:"reason,omitempty"`
+	TunnelID  string     `json:"tunnel_id"`
+	Status    string     `json:"status,omitempty"`
+	PublicURL string     `json:"public_url,omitempty"`
+	Reason    string     `json:"reason,omitempty"`
+	ResetAt   *time.Time `json:"reset_at,omitempty"`
 }
 
 func BuildTunnelUpdatedPayload(tunnelID, status, publicURL string) LifecycleEventPayload {
@@ -237,7 +249,7 @@ func IsTerminalStatus(status string) bool {
 
 func IsTerminalReason(reason string) bool {
 	switch reason {
-	case ReasonDeleted, ReasonDeletedAll, ReasonClosedByClient, ReasonClientDisconnected, ReasonExpired:
+	case ReasonDeleted, ReasonDeletedAll, ReasonClosedByClient, ReasonClientDisconnected, ReasonExpired, ReasonMonthlyTraffic:
 		return true
 	default:
 		return false

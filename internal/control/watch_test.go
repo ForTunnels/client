@@ -327,7 +327,7 @@ func TestExtractPayload(t *testing.T) {
 	}
 }
 
-func TestExtractTunnelCloseReason(t *testing.T) {
+func TestDecodeTunnelClosePayloadReason(t *testing.T) {
 	tests := []struct {
 		name     string
 		msg      map[string]interface{}
@@ -357,8 +357,8 @@ func TestExtractTunnelCloseReason(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := extractTunnelCloseReason(tt.msg)
-			assert.Equal(t, tt.expected, result, "extractTunnelCloseReason() = %v, want %v")
+			result := decodeTunnelClosePayload(envelopeFromMap(tt.msg))
+			assert.Equal(t, tt.expected, result.Reason, "decodeTunnelClosePayload() reason = %v, want %v")
 		})
 	}
 }

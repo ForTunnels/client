@@ -3,16 +3,16 @@ SHELL := /bin/bash
 
 export GOWORK=off
 
-GOPATH_BIN := $(shell go env GOPATH)/bin
-
-GOFUMPT_VERSION := v0.7.0
-GOIMPORTS_VERSION := v0.31.0
-GOVULNCHECK_VERSION := v1.1.4
-STATICCHECK_VERSION := v0.6.1
-GOCYCLO_VERSION := v0.6.0
-GOLANGCI_LINT_VERSION := v1.64.8
-INEFFASSIGN_VERSION := v0.1.0
-MISSPELL_VERSION := v0.3.4
+THIS_DIR := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+REPO_ROOT := $(abspath $(THIS_DIR)/../..)
+QUALITY_TOOLS_BIN := $(REPO_ROOT)/.cache/quality-tools/bin
+ENSURE_QUALITY_TOOLS := $(REPO_ROOT)/scripts/ci/ensure-quality-tools.sh
+GOCACHE ?= $(REPO_ROOT)/.cache/go-build
+GOMODCACHE ?= $(REPO_ROOT)/.cache/go-mod
+GOLANGCI_LINT_CACHE ?= $(REPO_ROOT)/.cache/golangci-v1-client
+export GOCACHE
+export GOMODCACHE
+export GOLANGCI_LINT_CACHE
 
 BIN_DIR ?= ./bin
 ARTIFACTS_DIR ?= ./dist
@@ -21,20 +21,15 @@ TARGET_OS := $(or $(GOOS),$(shell go env GOOS))
 BINARY_NAME := $(if $(filter windows,$(TARGET_OS)),client.msi,client)
 DEFAULT_SERVER_URL ?= https://fortunnels.ru
 
-.PHONY: all build build-fast test tidy clean release release-dev format format-check lint security check install-tools
+.PHONY: all build build-fast test tidy clean release release-dev format format-check lint security check install-tools quality-tools
 
 all: build
 
-install-tools:
-	@echo "==> Installing pinned Go tools (client)"
-	@go install mvdan.cc/gofumpt@$(GOFUMPT_VERSION)
-	@go install golang.org/x/tools/cmd/goimports@$(GOIMPORTS_VERSION)
-	@go install github.com/golangci/golangci-lint/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
-	@go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
-	@go install honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION)
-	@go install github.com/gordonklaus/ineffassign@$(INEFFASSIGN_VERSION)
-	@go install github.com/client9/misspell/cmd/misspell@$(MISSPELL_VERSION)
-	@go install github.com/fzipp/gocyclo/cmd/gocyclo@$(GOCYCLO_VERSION)
+quality-tools:
+	@$(ENSURE_QUALITY_TOOLS)
+
+install-tools: quality-tools
+	@echo "==> Pinned repository-local quality tools are ready"
 
 tidy:
 	@echo "==> go mod tidy (client)"
@@ -58,34 +53,34 @@ build-fast:
 clean:
 	rm -rf $(BIN_DIR) $(ARTIFACTS_DIR)
 
-format: install-tools
+format: quality-tools
 	@echo "==> gofumpt + goimports (rewrite)"
-	@GOWORK=off $(GOPATH_BIN)/gofumpt -w .
-	@GOWORK=off $(GOPATH_BIN)/goimports -w .
+	@GOWORK=off $(QUALITY_TOOLS_BIN)/gofumpt -w .
+	@GOWORK=off $(QUALITY_TOOLS_BIN)/goimports -w .
 
-format-check: install-tools
+format-check: quality-tools
 	@set -euo pipefail; \
 	echo "==> Checking formatting (read-only)"; \
-	unformatted=$$(GOWORK=off $(GOPATH_BIN)/gofumpt -l .); \
+	unformatted=$$(GOWORK=off $(QUALITY_TOOLS_BIN)/gofumpt -l .); \
 	if [ -n "$$unformatted" ]; then \
 		echo "ERROR: Unformatted Go files (run 'make format'):"; \
 		echo "$$unformatted"; \
 		exit 1; \
 	fi; \
-	unimported=$$(GOWORK=off $(GOPATH_BIN)/goimports -l .); \
+	unimported=$$(GOWORK=off $(QUALITY_TOOLS_BIN)/goimports -l .); \
 	if [ -n "$$unimported" ]; then \
 		echo "ERROR: Go files with import issues (run 'make format'):"; \
 		echo "$$unimported"; \
 		exit 1; \
 	fi
 
-lint: install-tools
-	@GOWORK=off $(GOPATH_BIN)/golangci-lint run --config .golangci.yml
+lint: quality-tools
+	@GOWORK=off $(QUALITY_TOOLS_BIN)/golangci-lint run --config .golangci.yml ./...
 
-security: install-tools
-	@GOWORK=off $(GOPATH_BIN)/govulncheck ./...
+security: quality-tools
+	@GOWORK=off $(QUALITY_TOOLS_BIN)/govulncheck ./...
 
-check: install-tools format-check
+check: quality-tools format-check
 	@set -euo pipefail; \
 	echo "==> Running strict code checks (will fail build on any error)"; \
 	echo "Running go vet..."; \
@@ -93,17 +88,17 @@ check: install-tools format-check
 	echo "Running tests..."; \
 	go test -v ./...; \
 	echo "Running golangci-lint..."; \
-	$(GOPATH_BIN)/golangci-lint run --config .golangci.yml; \
+	$(QUALITY_TOOLS_BIN)/golangci-lint run --config .golangci.yml; \
 	echo "Running security check..."; \
-	$(GOPATH_BIN)/govulncheck ./...; \
+	$(QUALITY_TOOLS_BIN)/govulncheck ./...; \
 	echo "Running staticcheck..."; \
-	$(GOPATH_BIN)/staticcheck ./...; \
+	$(QUALITY_TOOLS_BIN)/staticcheck ./...; \
 	echo "Checking for ineffectual assignments..."; \
-	$(GOPATH_BIN)/ineffassign ./...; \
+	$(QUALITY_TOOLS_BIN)/ineffassign ./...; \
 	echo "Checking for misspellings..."; \
-	$(GOPATH_BIN)/misspell -error .; \
+	$(QUALITY_TOOLS_BIN)/misspell -error .; \
 	echo "Checking cyclomatic complexity..."; \
-	$(GOPATH_BIN)/gocyclo -over 15 .; \
+	$(QUALITY_TOOLS_BIN)/gocyclo -over 15 .; \
 	echo "All checks passed"
 
 release: tidy

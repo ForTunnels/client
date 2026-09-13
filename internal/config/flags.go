@@ -69,6 +69,7 @@ type Config struct {
 	DPAuthSecretFromStdin bool
 	QUICPort              int
 	DTLSPort              int
+	TransportCAPath       string
 
 	LoginFlagProvided        bool
 	TokenFlagProvided        bool
@@ -88,6 +89,7 @@ type RuntimeSettings struct {
 	WatchInterval         time.Duration
 	QUICPort              int
 	DTLSPort              int
+	TransportCAPath       string
 }
 
 // QUICPortString returns the QUIC server port as a dial string.
@@ -122,6 +124,7 @@ func (c *Config) RuntimeSettings() RuntimeSettings {
 		WatchInterval:         c.WatchInterval,
 		QUICPort:              c.QUICPort,
 		DTLSPort:              c.DTLSPort,
+		TransportCAPath:       c.TransportCAPath,
 	}
 }
 
@@ -173,6 +176,7 @@ func Parse() (*Config, error) {
 	fs.BoolVar(&cfg.DPAuthSecretFromStdin, "dp-auth-secret-stdin", cfg.DPAuthSecretFromStdin, "Read data-plane auth secret from stdin")
 	fs.IntVar(&cfg.QUICPort, "quic-port", defaultQUICPort, "Server QUIC port for UDP data-plane")
 	fs.IntVar(&cfg.DTLSPort, "dtls-port", defaultDTLSPort, "Server DTLS port for UDP data-plane")
+	fs.StringVar(&cfg.TransportCAPath, "transport-ca", cfg.TransportCAPath, "CA PEM file for QUIC/DTLS server verification (or FORTUNNELS_TRANSPORT_CA)")
 
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		return nil, err
@@ -206,6 +210,9 @@ func Parse() (*Config, error) {
 		return nil, err
 	}
 	applyTransportPortEnv(cfg)
+	if cfg.TransportCAPath == "" {
+		cfg.TransportCAPath = support.GetEnvTrimmed("FORTUNNELS_TRANSPORT_CA")
+	}
 	applyConfigFileAuthtoken(cfg)
 
 	cfg.Protocol = strings.ToLower(strings.TrimSpace(cfg.Protocol))
@@ -564,7 +571,7 @@ func processPositionalArgs(args []string, protocol, targetAddr *string, localFla
 func handleSingleArg(arg string, protocol, targetAddr *string, localFlagProvided, protocolFlagProvided bool) {
 	if p := support.ParsePort(arg); p != "" {
 		setProtocolIfMissing(protocol, protocolFlagProvided, protoHTTP)
-		setTargetIfMissing(targetAddr, localFlagProvided, "127.0.0.1:"+p)
+		setTargetIfMissing(targetAddr, localFlagProvided, targetForPort(*protocol, p))
 		return
 	}
 	if support.LooksLikeHostPort(arg) {
@@ -580,7 +587,7 @@ func handleProtocolAndAddrArgs(protoArg, addrArg string, protocol, targetAddr *s
 	}
 	setProtocolIfMissing(protocol, protocolFlagProvided, argProto)
 	if p := support.ParsePort(addrArg); p != "" {
-		setTargetIfMissing(targetAddr, localFlagProvided, "127.0.0.1:"+p)
+		setTargetIfMissing(targetAddr, localFlagProvided, targetForPort(*protocol, p))
 		return
 	}
 	if support.LooksLikeHostPort(addrArg) {
@@ -598,6 +605,13 @@ func setTargetIfMissing(targetAddr *string, provided bool, value string) {
 	if !provided {
 		*targetAddr = value
 	}
+}
+
+func targetForPort(protocol, port string) string {
+	if strings.EqualFold(strings.TrimSpace(protocol), protoUDP) {
+		return "127.0.0.1:" + port
+	}
+	return "localhost:" + port
 }
 
 func isSupportedProtocol(p string) bool {

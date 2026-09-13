@@ -75,6 +75,10 @@ Create a tunnel to a local web server on port 8000:
 ./bin/client 8000
 ```
 
+For numeric HTTP, HTTPS, and TCP shortcuts, the client uses `localhost:8000`.
+That lets it reach a service that listens only on IPv6 (`::1`) as well as one
+that listens on IPv4. An explicit `host:port` value is preserved exactly.
+
 After the tunnel is created you will receive a public URL like `https://fortunnels.ru/t/{tunnel-id}/`.
 Host-based routing is also available, for example: `https://{subdomain}.fortunnels.ru`
 (where `{subdomain}` is a random identifier, not the tunnel ID).
@@ -90,8 +94,10 @@ Host-based routing is also available, for example: `https://{subdomain}.fortunne
 Expose a local TCP service (e.g. PostgreSQL, SSH) to a public endpoint:
 
 ```bash
-./bin/client tcp 5433
+./bin/client tcp 5433 -login user@example.test -pass-stdin
 ```
+
+The numeric TCP form also uses `localhost:5433`.
 
 Or with explicit flags:
 
@@ -106,8 +112,11 @@ The server allocates a public TCP port. Connect to the displayed `tcp://host:por
 Expose a local UDP service (e.g. DNS, game server):
 
 ```bash
-./bin/client udp 9000
+./bin/client udp 9000 -login user@example.test -pass-stdin
 ```
+
+The numeric UDP form remains IPv4-specific and uses `127.0.0.1:9000`. Supply
+an explicit `host:port` address when UDP must use a particular address family.
 
 ### Advanced UDP (reverse mode)
 
@@ -123,6 +132,7 @@ Expose a local UDP service (e.g. DNS, game server):
 - `-protocol http|https|tcp|udp` - tunnel protocol
 - `-user` - user identifier (for audit/quotas, default: `default`)
 - `-dp ws|quic|dtls` - data-plane transport (default: `ws`)
+- `-transport-ca` - optional PEM CA bundle added to platform roots for QUIC/DTLS; hostname and chain verification stay enabled
 
 ### Execution mode
 
@@ -168,6 +178,8 @@ Expose a local UDP service (e.g. DNS, game server):
 
 ### Authentication notes
 
+TCP and UDP require a registered account; a Free account is valid within its limits. Anonymous creation remains available only for HTTP/HTTPS when the server enables it.
+
 - `-login` - login for server authentication
 - `-pass` - password for server authentication
 - `-pass-file` - read password from a file
@@ -186,9 +198,14 @@ Expose a local UDP service (e.g. DNS, game server):
 
 Short forms are supported:
 
-- `client 8000` - HTTP tunnel to `127.0.0.1:8000`
-- `client http 8000` - explicit protocol
-- `client tcp 22` - TCP tunnel to `127.0.0.1:22`
+- `client 8000` - HTTP tunnel to `localhost:8000`
+- `client http 8000` - HTTP tunnel to `localhost:8000`
+- `client tcp 22` - TCP tunnel to `localhost:22`
+- `client udp 53` - UDP tunnel to `127.0.0.1:53`
+
+Explicit addresses are never rewritten. For example, `client -protocol http
+-local 127.0.0.1:8000` stays IPv4-specific, while `client -protocol http
+-local '[::1]:8000'` stays IPv6-specific.
 
 ## Security
 
@@ -233,13 +250,13 @@ Use the public URL to configure the webhook.
 ### SSH access
 
 ```bash
-./bin/client tcp 22
+./bin/client tcp 22 -login user@example.test -pass-stdin
 ```
 
 ### UDP (DNS)
 
 ```bash
-./bin/client udp 53
+./bin/client udp 53 -login user@example.test -pass-stdin
 ```
 
 Advanced reverse mode:
@@ -263,13 +280,13 @@ Advanced reverse mode:
 ### QUIC transport
 
 ```bash
-./bin/client tcp 22 -dp quic
+./bin/client tcp 22 -login user@example.test -pass-stdin -dp quic
 ```
 
 ### DTLS transport (UDP)
 
 ```bash
-./bin/client -protocol udp -dp dtls -udp-listen :5353 -udp-dst 127.0.0.1:53
+./bin/client -protocol udp -login user@example.test -pass-stdin -dp dtls -udp-listen :5353 -udp-dst 127.0.0.1:53
 ```
 
 ## Troubleshooting
@@ -290,8 +307,33 @@ Advanced reverse mode:
 **Fixes:**
 
 - Check authentication: use `-login`/`-pass` or `-token`
-- Ensure the local service is reachable: `curl http://127.0.0.1:8000`
+- Ensure the local service is reachable: `curl http://localhost:8000`
 - Check address format: must be `host:port` (e.g. `127.0.0.1:8000`)
+
+### Combined monthly traffic is exhausted
+
+The client prints the combined monthly-traffic message once, stops its transport, and exits with a nonzero status. Reconnecting or recreating the tunnel does not reset account usage. Wait for the next UTC month or ask an administrator to increase the allowance, then run the authenticated command again.
+
+### Backend unreachable or public 502
+
+The tunnel remains active when the local backend is temporarily unavailable.
+Each later public request retries the local connection, so a recovered backend
+starts serving without recreating the tunnel.
+
+If `localhost` works but `127.0.0.1` is refused, the service is probably
+listening only on IPv6. Compare:
+
+```bash
+curl -I http://localhost:4321/
+curl -I http://127.0.0.1:4321/
+```
+
+For an IPv6-only HTTP service, start the tunnel with either:
+
+```bash
+./bin/client http localhost:4321
+./bin/client -protocol http -local '[::1]:4321'
+```
 
 ### Empty PSK during encryption
 

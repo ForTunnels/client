@@ -4,8 +4,11 @@
 package dataplane
 
 import (
+	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"sync"
 	"time"
@@ -19,9 +22,13 @@ import (
 type Client struct {
 	conn       *websocket.Conn
 	sess       *smux.Session
-	pingTicker *time.Ticker
+	pingTicker stoppableTicker
 	done       chan struct{}
 	closeOnce  sync.Once
+}
+
+type stoppableTicker interface {
+	Stop()
 }
 
 func NewWSSmuxClient(serverURL, tunnelID string, settings config.RuntimeSettings, dpAuthToken string) (*Client, error) {
@@ -116,11 +123,14 @@ func CreateDataPlaneSession(serverURL, tunnelID string, settings config.RuntimeS
 		return nil, nil, fmt.Errorf("smux client: %w", err)
 	}
 
+	var cleanupOnce sync.Once
 	cleanup := func() {
-		_ = sess.Close()
-		close(pingDone)
-		pingTicker.Stop()
-		conn.Close()
+		cleanupOnce.Do(func() {
+			_ = sess.Close()
+			close(pingDone)
+			pingTicker.Stop()
+			conn.Close()
+		})
 	}
 
 	return sess, cleanup, nil
@@ -129,18 +139,28 @@ func CreateDataPlaneSession(serverURL, tunnelID string, settings config.RuntimeS
 // Reconnectable session manager ensures there is a live smux session and
 // reconnects with exponential backoff on failures.
 type Manager struct {
-	serverURL   string
-	tunnelID    string
-	dpAuthToken string
-	mu          sync.Mutex
-	conn        dataPlaneConn
-	sess        dataPlaneSession
-	pingDone    chan struct{}
-	pingTicker  *time.Ticker
-	stopped     bool
-	boInit      time.Duration
-	boMax       time.Duration
-	settings    config.RuntimeSettings
+	serverURL        string
+	tunnelID         string
+	dpAuthToken      string
+	mu               sync.Mutex
+	conn             dataPlaneConn
+	sess             dataPlaneSession
+	pingDone         chan struct{}
+	pingTicker       stoppableTicker
+	lifecycleHandler LifecycleHandler
+	lifecycleControl io.Closer
+	stopped          bool
+	boInit           time.Duration
+	boMax            time.Duration
+	settings         config.RuntimeSettings
+}
+
+// SetLifecycleHandler enables the client-opened smux control stream used for
+// terminal tunnel events. Set it before the first EnsureSession call.
+func (m *Manager) SetLifecycleHandler(handler LifecycleHandler) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.lifecycleHandler = handler
 }
 
 func NewManager(serverURL, tunnelID, dpAuthToken string, boInit, boMax time.Duration, settings config.RuntimeSettings) *Manager {
@@ -166,7 +186,20 @@ type dataPlaneSession interface {
 }
 
 func (m *Manager) EnsureSession() (dataPlaneSession, error) {
+	return m.EnsureSessionContext(context.Background())
+}
+
+// EnsureSessionContext returns a live session while allowing terminal lifecycle
+// cancellation to abort an in-flight dial or reconnect backoff.
+func (m *Manager) EnsureSessionContext(ctx context.Context) (dataPlaneSession, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	m.mu.Lock()
+	if err := ctx.Err(); err != nil {
+		m.mu.Unlock()
+		return nil, err
+	}
 	if m.stopped {
 		m.mu.Unlock()
 		return nil, errors.New("stopped")
@@ -183,25 +216,43 @@ func (m *Manager) EnsureSession() (dataPlaneSession, error) {
 	}
 	backoff := m.boInit
 	for {
+		if err := ctx.Err(); err != nil {
+			m.mu.Unlock()
+			return nil, err
+		}
 		if m.stopped {
 			m.mu.Unlock()
 			return nil, errors.New("stopped")
 		}
-		conn, resp, err := websocket.DefaultDialer.Dial(wsURL, headers)
+		conn, resp, stopDialCancellation, err := dialWebSocketContext(ctx, wsURL, headers)
 		if resp != nil && resp.Body != nil {
 			resp.Body.Close()
 		}
 		if err == nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				_ = conn.Close()
+				stopDialCancellation()
+				m.mu.Unlock()
+				return nil, ctxErr
+			}
 			sess, initErr := m.initializeSession(conn)
+			stopDialCancellation()
 			if initErr == nil {
 				m.mu.Unlock()
 				return sess, nil
 			}
+		} else {
+			stopDialCancellation()
 		}
 		wait := backoff
 		backoff = nextBackoff(backoff, m.boMax)
 		m.mu.Unlock()
-		sleepReconnectBackoff(m.isStopped, wait)
+		if !sleepReconnectBackoffContext(ctx, m.isStopped, wait) {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			return nil, errors.New("stopped")
+		}
 		m.mu.Lock()
 		if m.sess != nil && !m.sess.IsClosed() {
 			sess := m.sess
@@ -209,6 +260,37 @@ func (m *Manager) EnsureSession() (dataPlaneSession, error) {
 			return sess, nil
 		}
 	}
+}
+
+func dialWebSocketContext(
+	ctx context.Context,
+	wsURL string,
+	headers http.Header,
+) (*websocket.Conn, *http.Response, func(), error) {
+	dialer := *websocket.DefaultDialer
+	baseDial := dialer.NetDialContext
+	if baseDial == nil {
+		baseDial = (&net.Dialer{}).DialContext
+	}
+	dialFinished := make(chan struct{})
+	var finishOnce sync.Once
+	finish := func() { finishOnce.Do(func() { close(dialFinished) }) }
+	dialer.NetDialContext = func(dialCtx context.Context, network, address string) (net.Conn, error) {
+		conn, err := baseDial(dialCtx, network, address)
+		if err != nil {
+			return nil, err
+		}
+		go func() {
+			select {
+			case <-ctx.Done():
+				_ = conn.Close()
+			case <-dialFinished:
+			}
+		}()
+		return conn, nil
+	}
+	conn, resp, err := dialer.DialContext(ctx, wsURL, headers)
+	return conn, resp, finish, err
 }
 
 func (m *Manager) isStopped() bool {
@@ -236,6 +318,17 @@ func (m *Manager) initializeSession(conn *websocket.Conn) (*smux.Session, error)
 
 	m.conn = conn
 	m.sess = sess
+	if m.lifecycleHandler != nil {
+		control, controlErr := openLifecycleControlStream(sess, m.lifecycleHandler)
+		if controlErr != nil {
+			_ = sess.Close()
+			_ = conn.Close()
+			m.conn = nil
+			m.sess = nil
+			return nil, controlErr
+		}
+		m.lifecycleControl = control
+	}
 	if m.pingDone != nil {
 		close(m.pingDone)
 	}
@@ -243,8 +336,9 @@ func (m *Manager) initializeSession(conn *websocket.Conn) (*smux.Session, error)
 		m.pingTicker.Stop()
 	}
 	m.pingDone = make(chan struct{})
-	m.pingTicker = time.NewTicker(m.settings.PingInterval)
-	StartPingLoop(m.pingDone, conn, m.pingTicker, m.settings.PingTimeout)
+	pingTicker := time.NewTicker(m.settings.PingInterval)
+	m.pingTicker = pingTicker
+	StartPingLoop(m.pingDone, conn, pingTicker, m.settings.PingTimeout)
 	return sess, nil
 }
 
@@ -266,10 +360,12 @@ func (m *Manager) resetSession() {
 	conn := m.conn
 	pingDone := m.pingDone
 	pingTicker := m.pingTicker
+	lifecycleControl := m.lifecycleControl
 	m.sess = nil
 	m.conn = nil
 	m.pingDone = nil
 	m.pingTicker = nil
+	m.lifecycleControl = nil
 	m.mu.Unlock()
 
 	if pingDone != nil {
@@ -277,6 +373,9 @@ func (m *Manager) resetSession() {
 	}
 	if pingTicker != nil {
 		pingTicker.Stop()
+	}
+	if lifecycleControl != nil {
+		_ = lifecycleControl.Close()
 	}
 	if sess != nil {
 		_ = sess.Close()
@@ -297,6 +396,10 @@ func (m *Manager) Close() {
 	if m.pingTicker != nil {
 		m.pingTicker.Stop()
 		m.pingTicker = nil
+	}
+	if m.lifecycleControl != nil {
+		_ = m.lifecycleControl.Close()
+		m.lifecycleControl = nil
 	}
 	if m.sess != nil {
 		_ = m.sess.Close()

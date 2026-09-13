@@ -4,6 +4,7 @@
 package dataplane
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -83,15 +84,25 @@ func StartControlPingLoop(
 	}()
 }
 
-func sleepReconnectBackoff(stopped func() bool, d time.Duration) {
+func sleepReconnectBackoffContext(ctx context.Context, stopped func() bool, d time.Duration) bool {
 	if d <= 0 {
-		return
+		return ctx.Err() == nil && !stopped()
 	}
-	deadline := time.Now().Add(d)
-	for time.Now().Before(deadline) {
-		if stopped() {
-			return
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	pollEvery := min(d, 50*time.Millisecond)
+	poll := time.NewTicker(pollEvery)
+	defer poll.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-timer.C:
+			return !stopped()
+		case <-poll.C:
 		}
-		time.Sleep(50 * time.Millisecond)
+		if stopped() {
+			return false
+		}
 	}
 }

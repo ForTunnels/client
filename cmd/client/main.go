@@ -10,9 +10,11 @@ package main
 // - TCP listen: accepts local connections and forwards via smux streams
 
 import (
+	"context"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -25,6 +27,7 @@ import (
 	ctrl "github.com/fortunnels/client/internal/control"
 	dp "github.com/fortunnels/client/internal/dataplane"
 	clierrors "github.com/fortunnels/client/internal/support"
+	protocolv1 "github.com/fortunnels/client/shared/protocol/v1"
 )
 
 const (
@@ -62,9 +65,16 @@ func main() {
 	}
 
 	if err := runClientWorkflow(cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
+		writeWorkflowError(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func writeWorkflowError(output io.Writer, err error) {
+	if err == nil || ctrl.IsReportedTerminalError(err) {
+		return
+	}
+	fmt.Fprintf(output, "%v\n", err)
 }
 
 func parseConfig() (*config.Config, error) {
@@ -108,16 +118,16 @@ func runClientWorkflow(cfg *config.Config) error {
 		csrf,
 	)
 	if err != nil {
-		if authErr := auth.MapCreateTunnelAuthError(err, bearer, cfg.TokenFromConfigFile); authErr != nil {
+		if authErr := auth.MapCreateTunnelAuthError(err, bearer, cfg.TokenFromConfigFile, cfg.Protocol); authErr != nil {
 			return fmt.Errorf("❌ Authentication failed: %w", authErr)
 		}
-		return clierrors.HandleTunnelCreationError(err, cfg.ServerURL)
+		return clierrors.HandleTunnelCreationError(err, cfg.ServerURL, cfg.Protocol, cfg.TargetAddr)
 	}
 
 	if err := auth.CheckBearerNotRejectedAsGuest(bearer, cfg.TokenFromConfigFile, auth.TunnelGuestSignals{
 		IsGuest: tun.IsGuest,
 		UserID:  tun.UserID,
-	}); err != nil {
+	}, cfg.Protocol); err != nil {
 		// Guest tunnel was created without valid auth; omit rejected bearer on cleanup.
 		ctrl.DeleteTunnelWithClient(cfg.ServerURL, tun.ID, httpClient, "", csrf)
 		return fmt.Errorf("❌ Authentication failed: %w", err)
@@ -130,155 +140,187 @@ func runClientWorkflow(cfg *config.Config) error {
 	ctrl.PrintTunnelInfo(cfg.ServerURL, tun)
 	loginUsed := strings.TrimSpace(cfg.Login) != "" && strings.TrimSpace(cfg.Password) != ""
 	ctrl.WarnGuestTunnelWithLogin(loginUsed, tun)
-	if err := handleHTTPProtocol(cfg, runtime, tun, httpClient, bearer, csrf, authToken); err != nil {
-		return err
-	}
-	if err := handleTCPServeIncoming(cfg, runtime, tun, httpClient, bearer, csrf, authToken); err != nil {
-		return err
-	}
-	if err := handleUDPProtocol(cfg, runtime, enc, tun, authToken, httpClient, bearer, csrf); err != nil {
-		return err
+	serveCtx, cancelServe := context.WithCancel(context.Background())
+	defer cancelServe()
+	terminal := ctrl.NewTerminalCoordinator(nil, cancelServe)
+	go ctrl.RunFallbackLifecyclePollerWithReasonContext(serveCtx, httpClient, cfg.ServerURL, tun.ID, bearer, terminal.Signal, runtime.WatchInterval)
+	if cfg.WatchWS {
+		go ctrl.RunLifecycleWatch(serveCtx, httpClient, cfg.ServerURL, tun.ID, bearer, runtime, terminal.Signal)
 	}
 
-	if cfg.WatchWS {
-		fmt.Printf("\n🔌 Connecting to WebSocket for real-time updates...\n")
-		ctrl.ConnectWebSocketWithAuth(httpClient, cfg.ServerURL, tun.ID, bearer, runtime)
+	if err := handleHTTPProtocol(serveCtx, terminal, cfg, runtime, tun, httpClient, bearer, csrf, authToken); err != nil {
+		return err
+	}
+	if err := handleTCPServeIncoming(serveCtx, terminal, cfg, runtime, tun, httpClient, bearer, csrf, authToken); err != nil {
+		return err
+	}
+	if err := handleUDPProtocol(serveCtx, terminal, cfg, runtime, enc, tun, authToken, httpClient, bearer, csrf); err != nil {
+		return err
 	}
 	return nil
 }
 
 // handleHTTPProtocol delegates to tunnel package and TCP data-plane
-func handleHTTPProtocol(cfg *config.Config, runtime config.RuntimeSettings, tun *ctrl.Response, httpClient *http.Client, bearer, csrf, dpAuthToken string) error {
+func handleHTTPProtocol(
+	ctx context.Context,
+	terminal *ctrl.TerminalCoordinator,
+	cfg *config.Config,
+	runtime config.RuntimeSettings,
+	tun *ctrl.Response,
+	httpClient *http.Client,
+	bearer, csrf, dpAuthToken string,
+) error {
 	if !isHTTPProtocol(cfg.Protocol) {
 		return nil
 	}
-	reporter := dp.NewBackendStateReporter()
+	reporter := dp.NewBackendStateReporter(cfg.Protocol)
 	errCh := make(chan error, 1)
-	tunnelDeletedCh := make(chan struct{})
 	go func() {
-		errCh <- dp.StartDataPlaneServeIncoming(cfg.ServerURL, tun.ID, runtime, reporter, dpAuthToken)
+		errCh <- dp.StartDataPlaneServeIncomingContext(ctx, cfg.ServerURL, tun.ID, runtime, reporter, dpAuthToken, lifecycleSignal(terminal))
 	}()
-	go ctrl.RunFallbackLifecyclePoller(httpClient, cfg.ServerURL, tun.ID, bearer, func() { close(tunnelDeletedCh) }, runtime.WatchInterval)
 
-	fmt.Println("💡 Tip: If you see 'Backend unreachable', start your backend on the target address.")
+	fmt.Printf("💡 If the local %s backend is unavailable, the tunnel remains active; later incoming traffic retries it.\n", strings.ToUpper(cfg.Protocol))
 	fmt.Println("\n🔌 Serving HTTP over data-plane. Press Ctrl+C to stop.")
-	sigc := make(chan os.Signal, 1)
-	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
-	select {
-	case <-sigc:
-		return nil
-	case <-tunnelDeletedCh:
-		return nil
-	case err := <-errCh:
-		if err != nil {
-			ctrl.DeleteTunnelWithClient(cfg.ServerURL, tun.ID, httpClient, bearer, csrf)
-			return fmt.Errorf("❌ Data-plane serve stopped: %w", err)
-		}
-		return nil
-	}
+	return waitForDataPlaneServe(terminal, errCh, cfg.ServerURL, tun.ID, httpClient, bearer, csrf)
 }
 
 // handleTCPServeIncoming is the default TCP mode: serve incoming streams from server, dial local backend.
-func handleTCPServeIncoming(cfg *config.Config, runtime config.RuntimeSettings, tun *ctrl.Response, httpClient *http.Client, bearer, csrf, dpAuthToken string) error {
+func handleTCPServeIncoming(
+	ctx context.Context,
+	terminal *ctrl.TerminalCoordinator,
+	cfg *config.Config,
+	runtime config.RuntimeSettings,
+	tun *ctrl.Response,
+	httpClient *http.Client,
+	bearer, csrf, dpAuthToken string,
+) error {
 	if !strings.EqualFold(cfg.Protocol, "tcp") {
 		return nil
 	}
-	reporter := dp.NewBackendStateReporter()
+	reporter := dp.NewBackendStateReporter(cfg.Protocol)
 	errCh := make(chan error, 1)
-	tunnelDeletedCh := make(chan struct{})
 	go func() {
-		errCh <- dp.StartDataPlaneServeIncoming(cfg.ServerURL, tun.ID, runtime, reporter, dpAuthToken)
+		errCh <- dp.StartDataPlaneServeIncomingContext(ctx, cfg.ServerURL, tun.ID, runtime, reporter, dpAuthToken, lifecycleSignal(terminal))
 	}()
-	go ctrl.RunFallbackLifecyclePoller(httpClient, cfg.ServerURL, tun.ID, bearer, func() { close(tunnelDeletedCh) }, runtime.WatchInterval)
 	log.Printf("INFO: TCP expose-local mode active; backend target %s", cfg.TargetAddr)
 	fmt.Printf("\n🔌 Serving TCP over data-plane (expose-local). Backend: %s\n", cfg.TargetAddr)
-	fmt.Println("💡 Tip: If you see 'Backend unreachable', start your backend on the target address.")
+	fmt.Printf("💡 If the local %s backend is unavailable, the tunnel remains active; later incoming traffic retries it.\n", strings.ToUpper(cfg.Protocol))
 	fmt.Println("\n🔌 Press Ctrl+C to stop.")
-	sigc := make(chan os.Signal, 1)
-	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
-	select {
-	case <-sigc:
-		return nil
-	case <-tunnelDeletedCh:
-		return nil
-	case err := <-errCh:
-		if err != nil {
-			ctrl.DeleteTunnelWithClient(cfg.ServerURL, tun.ID, httpClient, bearer, csrf)
-			return fmt.Errorf("❌ Data-plane serve stopped: %w", err)
-		}
-		return nil
-	}
+	return waitForDataPlaneServe(terminal, errCh, cfg.ServerURL, tun.ID, httpClient, bearer, csrf)
 }
 
 // handleUDPProtocol runs expose-local (default) or advanced reverse UDP proxy mode.
-func handleUDPProtocol(cfg *config.Config, runtime config.RuntimeSettings, enc config.EncryptionSettings, tun *ctrl.Response, authToken string, httpClient *http.Client, bearer, csrf string) error {
+func handleUDPProtocol(
+	ctx context.Context,
+	terminal *ctrl.TerminalCoordinator,
+	cfg *config.Config,
+	runtime config.RuntimeSettings,
+	enc config.EncryptionSettings,
+	tun *ctrl.Response,
+	authToken string,
+	httpClient *http.Client,
+	bearer, csrf string,
+) error {
 	if !strings.EqualFold(cfg.Protocol, "udp") {
 		return nil
 	}
 	if config.IsUDPReverseMode(cfg) {
-		return handleUDPReverseMode(cfg, runtime, enc, tun, authToken, httpClient, bearer, csrf)
+		strategy := dp.NewStrategy(
+			strings.ToLower(cfg.DataPlane), cfg.ServerURL, tun.ID, authToken,
+			cfg.UDPDst, cfg.UDPListen, runtime, enc,
+		)
+		return handleUDPReverseMode(ctx, terminal, strategy, cfg.ServerURL, tun.ID, httpClient, bearer, csrf)
 	}
-	return handleUDPExposeLocal(cfg, runtime, tun, authToken, httpClient, bearer, csrf)
+	return handleUDPExposeLocal(ctx, terminal, cfg, runtime, tun, authToken, httpClient, bearer, csrf)
 }
 
-func handleUDPExposeLocal(cfg *config.Config, runtime config.RuntimeSettings, tun *ctrl.Response, authToken string, httpClient *http.Client, bearer, csrf string) error {
-	reporter := dp.NewBackendStateReporter()
+func handleUDPExposeLocal(
+	ctx context.Context,
+	terminal *ctrl.TerminalCoordinator,
+	cfg *config.Config,
+	runtime config.RuntimeSettings,
+	tun *ctrl.Response,
+	authToken string,
+	httpClient *http.Client,
+	bearer, csrf string,
+) error {
 	errCh := make(chan error, 1)
-	tunnelDeletedCh := make(chan struct{})
 	go func() {
-		errCh <- dp.StartDataPlaneServeIncomingUDP(cfg.ServerURL, tun.ID, runtime, reporter, authToken)
+		// A connected UDP socket does not establish peer reachability. Supplying
+		// the stream-dial reporter here would announce a reachable backend before
+		// any datagram response proves it, so UDP keeps its existing data path
+		// without TCP-style up/down transition messages.
+		errCh <- dp.StartDataPlaneServeIncomingUDPContext(
+			ctx, cfg.ServerURL, tun.ID, runtime, nil, authToken, lifecycleSignal(terminal),
+		)
 	}()
-	go ctrl.RunFallbackLifecyclePoller(httpClient, cfg.ServerURL, tun.ID, bearer, func() { close(tunnelDeletedCh) }, runtime.WatchInterval)
 	log.Printf("INFO: UDP expose-local mode active; backend target %s", cfg.TargetAddr)
 	fmt.Printf("\n🔌 Serving UDP over data-plane (expose-local). Backend: %s\n", cfg.TargetAddr)
-	fmt.Println("💡 Tip: If you see 'Backend unreachable', start your backend on the target address.")
+	fmt.Printf(
+		"💡 If the local %s backend is unavailable, the tunnel remains active; later incoming traffic retries it.\n",
+		strings.ToUpper(cfg.Protocol),
+	)
 	fmt.Println("\n🔌 Press Ctrl+C to stop.")
+	return waitForDataPlaneServe(terminal, errCh, cfg.ServerURL, tun.ID, httpClient, bearer, csrf)
+}
+
+func handleUDPReverseMode(
+	ctx context.Context,
+	terminal *ctrl.TerminalCoordinator,
+	strategy dp.Strategy,
+	serverURL, tunnelID string,
+	httpClient *http.Client,
+	bearer, csrf string,
+) error {
+	errCh := make(chan error, 1)
+	fmt.Print(strategy.Description)
+	fmt.Println("\n🔌 Press Ctrl+C to stop.")
+	go func() {
+		errCh <- runUDPStrategyContext(ctx, strategy, serverURL, tunnelID, httpClient, bearer, csrf)
+	}()
+	return waitForProtocol(terminal, errCh, nil)
+}
+
+func waitForDataPlaneServe(
+	terminal *ctrl.TerminalCoordinator,
+	errCh <-chan error,
+	serverURL, tunnelID string,
+	httpClient *http.Client,
+	bearer, csrf string,
+) error {
+	return waitForProtocol(terminal, errCh, func(err error) error {
+		if err == nil {
+			return nil
+		}
+		ctrl.DeleteTunnelWithClient(serverURL, tunnelID, httpClient, bearer, csrf)
+		return fmt.Errorf("❌ Data-plane serve stopped: %w", err)
+	})
+}
+
+func waitForProtocol(terminal *ctrl.TerminalCoordinator, errCh <-chan error, handleError func(error) error) error {
 	sigc := make(chan os.Signal, 1)
 	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigc)
 	select {
 	case <-sigc:
 		return nil
-	case <-tunnelDeletedCh:
-		return nil
+	case <-terminal.Done():
+		return terminal.ExitError()
 	case err := <-errCh:
-		if err != nil {
-			ctrl.DeleteTunnelWithClient(cfg.ServerURL, tun.ID, httpClient, bearer, csrf)
-			return fmt.Errorf("❌ Data-plane serve stopped: %w", err)
+		if terminalErr := terminal.Err(); terminalErr != nil {
+			return terminal.ExitError()
 		}
-		return nil
+		if handleError != nil {
+			return handleError(err)
+		}
+		return err
 	}
 }
 
-func handleUDPReverseMode(cfg *config.Config, runtime config.RuntimeSettings, enc config.EncryptionSettings, tun *ctrl.Response, authToken string, httpClient *http.Client, bearer, csrf string) error {
-	errCh := make(chan error, 1)
-	tunnelDeletedCh := make(chan struct{})
-	go ctrl.RunFallbackLifecyclePoller(httpClient, cfg.ServerURL, tun.ID, bearer, func() { close(tunnelDeletedCh) }, runtime.WatchInterval)
-	plane := strings.ToLower(cfg.DataPlane)
-
-	strategy := dp.NewStrategy(
-		plane,
-		cfg.ServerURL,
-		tun.ID,
-		authToken,
-		cfg.UDPDst,
-		cfg.UDPListen,
-		runtime,
-		enc,
-	)
-	fmt.Print(strategy.Description)
-	fmt.Println("\n🔌 Press Ctrl+C to stop.")
-	sigc := make(chan os.Signal, 1)
-	signal.Notify(sigc, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		errCh <- runUDPStrategy(strategy, cfg.ServerURL, tun.ID, httpClient, bearer, csrf)
-	}()
-	select {
-	case <-sigc:
-		return nil
-	case <-tunnelDeletedCh:
-		return nil
-	case err := <-errCh:
-		return err
+func lifecycleSignal(terminal *ctrl.TerminalCoordinator) func(protocolv1.LifecycleEventPayload) {
+	return func(payload protocolv1.LifecycleEventPayload) {
+		err := ctrl.TrafficQuotaErrorFromLifecycle(payload)
+		terminal.Signal(err)
 	}
 }
 
@@ -315,9 +357,12 @@ func ensureUDPHasTarget(cfg *config.Config) error {
 
 // --- UDP strategy helpers ----------------------------------------------------
 
-func runUDPStrategy(strategy dp.Strategy, serverURL, tunnelID string, httpClient *http.Client, bearer, csrf string) error {
+func runUDPStrategyContext(ctx context.Context, strategy dp.Strategy, serverURL, tunnelID string, httpClient *http.Client, bearer, csrf string) error {
 	fmt.Println(strategy.RunningMessage)
-	if err := strategy.Run(); err != nil {
+	if err := strategy.RunContext(ctx); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		ctrl.DeleteTunnelWithClient(serverURL, tunnelID, httpClient, bearer, csrf)
 		return fmt.Errorf("%s: %w", strategy.ErrLabel, err)
 	}

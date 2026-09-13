@@ -119,12 +119,62 @@ func TestDefaultConfigIgnoresRuntimeServerEnvironment(t *testing.T) {
 	assert.Equal(t, "https://fortunnels.ru", defaultConfig().ServerURL)
 }
 
-func TestProcessPositionalArgs_TCPPort(t *testing.T) {
-	protocol := "http"
-	targetAddr := ""
-	processPositionalArgs([]string{"tcp", "5433"}, &protocol, &targetAddr, false, false)
-	assert.Equal(t, protoTCP, protocol, "tcp 5433 should set protocol to tcp")
-	assert.Equal(t, "127.0.0.1:5433", targetAddr, "tcp 5433 should set target_addr to 127.0.0.1:5433")
+func TestProcessPositionalArgs_NumericPortUsesEffectiveProtocol(t *testing.T) {
+	tests := []struct {
+		name                 string
+		args                 []string
+		initialProtocol      string
+		protocolFlagProvided bool
+		wantProtocol         string
+		wantTarget           string
+	}{
+		{
+			name:            "default http uses localhost",
+			args:            []string{"5433"},
+			initialProtocol: protoHTTP,
+			wantProtocol:    protoHTTP,
+			wantTarget:      "localhost:5433",
+		},
+		{
+			name:            "https uses localhost",
+			args:            []string{"https", "5433"},
+			initialProtocol: protoHTTP,
+			wantProtocol:    protoHTTPS,
+			wantTarget:      "localhost:5433",
+		},
+		{
+			name:            "tcp uses localhost",
+			args:            []string{"tcp", "5433"},
+			initialProtocol: protoHTTP,
+			wantProtocol:    protoTCP,
+			wantTarget:      "localhost:5433",
+		},
+		{
+			name:            "udp uses IPv4 loopback",
+			args:            []string{"udp", "5433"},
+			initialProtocol: protoHTTP,
+			wantProtocol:    protoUDP,
+			wantTarget:      "127.0.0.1:5433",
+		},
+		{
+			name:                 "protocol flag wins over positional protocol",
+			args:                 []string{"tcp", "5433"},
+			initialProtocol:      "UDP",
+			protocolFlagProvided: true,
+			wantProtocol:         "UDP",
+			wantTarget:           "127.0.0.1:5433",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			protocol := tt.initialProtocol
+			targetAddr := ""
+			processPositionalArgs(tt.args, &protocol, &targetAddr, false, tt.protocolFlagProvided)
+			assert.Equal(t, tt.wantProtocol, protocol)
+			assert.Equal(t, tt.wantTarget, targetAddr)
+		})
+	}
 }
 
 func TestValidatePositionalArgs(t *testing.T) {
@@ -181,7 +231,27 @@ func TestParse_AcceptsProtocolThenPort(t *testing.T) {
 	cfg, err := testParseWithArgs(t, []string{"client", "tcp", "5433"})
 	require.NoError(t, err)
 	assert.Equal(t, protoTCP, cfg.Protocol)
-	assert.Equal(t, "127.0.0.1:5433", cfg.TargetAddr)
+	assert.Equal(t, "localhost:5433", cfg.TargetAddr)
+}
+
+func TestParse_NumericPortUsesProtocolFlagRegardlessOfArgumentOrder(t *testing.T) {
+	for _, args := range [][]string{
+		{"client", "--protocol", "udp", "5433"},
+		{"client", "5433", "--protocol", "udp"},
+		{"client", "tcp", "5433", "--protocol", "udp"},
+	} {
+		cfg, err := testParseWithArgs(t, args)
+		require.NoError(t, err)
+		assert.Equal(t, protoUDP, cfg.Protocol)
+		assert.Equal(t, "127.0.0.1:5433", cfg.TargetAddr)
+	}
+}
+
+func TestParse_ExplicitTargetIsUnchanged(t *testing.T) {
+	cfg, err := testParseWithArgs(t, []string{"client", "--protocol", "tcp", "[::1]:5433"})
+	require.NoError(t, err)
+	assert.Equal(t, protoTCP, cfg.Protocol)
+	assert.Equal(t, "[::1]:5433", cfg.TargetAddr)
 }
 
 func TestParseRejectsRemovedEndpointFlags(t *testing.T) {

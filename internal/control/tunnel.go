@@ -16,12 +16,36 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	protocolv1 "github.com/fortunnels/client/shared/protocol/v1"
 )
 
 type Response = protocolv1.Tunnel
+
+const maxTunnelErrorBodyBytes = 64 << 10
+
+// TunnelCreateError preserves the safe structured server error contract while
+// keeping legacy status/body responses compatible.
+type TunnelCreateError struct {
+	Status  int
+	Code    string
+	Message string
+}
+
+func (e *TunnelCreateError) Error() string {
+	if e == nil {
+		return "tunnel creation failed"
+	}
+	if e.Message != "" {
+		return fmt.Sprintf("server returned status %d: %s", e.Status, e.Message)
+	}
+	return fmt.Sprintf("server returned status %d", e.Status)
+}
+
+func (e *TunnelCreateError) ErrorCode() string { return e.Code }
+func (e *TunnelCreateError) HTTPStatus() int   { return e.Status }
 
 // createTunnelWithClient allows passing http.Client (with cookiejar), bearer token, and optional CSRF header for session auth.
 func CreateTunnelWithClient(
@@ -78,14 +102,12 @@ func CreateTunnelWithClient(
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusCreated {
-		// Try to read error message from response body
-		//nolint:errcheck // best-effort read of error body
-		bodyBytes, _ := io.ReadAll(resp.Body)
-		bodyStr := truncateErrorBody(strings.TrimSpace(string(bodyBytes)))
-		if bodyStr != "" {
-			return nil, fmt.Errorf("server returned status %d: %s", resp.StatusCode, bodyStr)
+		// Bound hostile or accidental server bodies before parsing or displaying.
+		bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, maxTunnelErrorBodyBytes+1)) //nolint:errcheck // best-effort body
+		if len(bodyBytes) > maxTunnelErrorBodyBytes {
+			bodyBytes = bodyBytes[:maxTunnelErrorBodyBytes]
 		}
-		return nil, fmt.Errorf("server returned status %d", resp.StatusCode)
+		return nil, decodeTunnelCreateError(resp.StatusCode, bodyBytes)
 	}
 
 	var tunnel Response
@@ -94,6 +116,31 @@ func CreateTunnelWithClient(
 	}
 
 	return &tunnel, nil
+}
+
+func decodeTunnelCreateError(status int, body []byte) error {
+	var apiErr protocolv1.APIError
+	if json.Unmarshal(body, &apiErr) == nil {
+		message := apiErr.Message
+		if message == "" {
+			message = apiErr.Error
+		}
+		return &TunnelCreateError{
+			Status:  status,
+			Code:    sanitizeTerminalText(apiErr.Code),
+			Message: truncateErrorBody(sanitizeTerminalText(message)),
+		}
+	}
+	return &TunnelCreateError{Status: status, Message: truncateErrorBody(sanitizeTerminalText(strings.TrimSpace(string(body))))}
+}
+
+func sanitizeTerminalText(value string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return -1
+		}
+		return r
+	}, value)
 }
 
 const maxTunnelErrorBodyRunes = 200

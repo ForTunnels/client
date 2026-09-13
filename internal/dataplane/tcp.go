@@ -5,17 +5,20 @@ package dataplane
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/fortunnels/client/internal/config"
 	"github.com/fortunnels/client/internal/support"
+	protocolv1 "github.com/fortunnels/client/shared/protocol/v1"
 )
 
 // BackendStateReporter is called on backend dial success/failure for CLI transition messages.
@@ -24,8 +27,17 @@ import (
 type BackendStateReporter func(dst string, err error)
 
 // NewBackendStateReporter returns a reporter that prints one-time messages on backend dial
-// down/up transitions. Messages reflect transport-level reachability only, not full proxy readiness.
-func NewBackendStateReporter() BackendStateReporter {
+// down/up transitions for the requested protocol. Messages reflect transport-level
+// reachability only, not full proxy readiness.
+func NewBackendStateReporter(protocol string) BackendStateReporter {
+	return newBackendStateReporter(protocol, os.Stdout)
+}
+
+func newBackendStateReporter(protocol string, output io.Writer) BackendStateReporter {
+	if output == nil {
+		output = io.Discard
+	}
+	protocol = strings.ToLower(strings.TrimSpace(protocol))
 	var mu sync.Mutex
 	state := make(map[string]bool) // dst -> wasDown
 	return func(dst string, err error) {
@@ -34,39 +46,112 @@ func NewBackendStateReporter() BackendStateReporter {
 		wasDown := state[dst]
 		if err != nil {
 			if !wasDown {
-				fmt.Printf("⚠️  Backend unreachable for %s — start your backend\n", dst)
+				fmt.Fprintf(
+					output,
+					"⚠️  Backend unreachable for %s (%s) — tunnel remains active; %s. Start the local backend on this target.\n",
+					dst,
+					backendProtocolLabel(protocol),
+					backendRetryGuidance(protocol),
+				)
 			}
 			state[dst] = true
 		} else {
 			if wasDown {
-				fmt.Printf("✅ Backend reachable for %s\n", dst)
+				fmt.Fprintf(output, "✅ Backend reachable for %s (%s); forwarding new traffic.\n", dst, backendProtocolLabel(protocol))
 			}
 			state[dst] = false
 		}
 	}
 }
 
+func backendProtocolLabel(protocol string) string {
+	if protocol == "" {
+		return "TCP"
+	}
+	return strings.ToUpper(protocol)
+}
+
+func backendRetryGuidance(protocol string) string {
+	switch protocol {
+	case "udp":
+		return "the next incoming datagram retries this UDP backend"
+	case "tcp":
+		return "the next incoming connection retries this TCP backend"
+	case "https":
+		return "the next incoming HTTPS request retries this backend"
+	default:
+		return "the next incoming HTTP request retries this backend"
+	}
+}
+
 func StartDataPlaneServeIncoming(serverURL, tunnelID string, runtime config.RuntimeSettings, reporter BackendStateReporter, dpAuthToken string) error {
+	return StartDataPlaneServeIncomingContext(context.Background(), serverURL, tunnelID, runtime, reporter, dpAuthToken, nil)
+}
+
+func StartDataPlaneServeIncomingContext(
+	ctx context.Context,
+	serverURL, tunnelID string,
+	runtime config.RuntimeSettings,
+	reporter BackendStateReporter,
+	dpAuthToken string,
+	onLifecycle func(protocolv1.LifecycleEventPayload),
+) error {
+	return startIncomingDataPlaneContext(
+		ctx, serverURL, tunnelID, runtime, reporter, dpAuthToken, onLifecycle, serveIncomingStream, "incoming stream error",
+	)
+}
+
+type incomingStreamHandler func(io.ReadWriteCloser, BackendStateReporter) error
+
+func startIncomingDataPlaneContext(
+	ctx context.Context,
+	serverURL, tunnelID string,
+	runtime config.RuntimeSettings,
+	reporter BackendStateReporter,
+	dpAuthToken string,
+	onLifecycle func(protocolv1.LifecycleEventPayload),
+	handleStream incomingStreamHandler,
+	errorLabel string,
+) error {
 	mgr := NewManager(serverURL, tunnelID, dpAuthToken, time.Second, 30*time.Second, runtime)
+	mgr.SetLifecycleHandler(onLifecycle)
 	defer mgr.Close()
+	stopCloser := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			mgr.Close()
+		case <-stopCloser:
+		}
+	}()
+	defer close(stopCloser)
 	for {
-		// ensure session alive
-		sess, err := mgr.EnsureSession()
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		sess, err := mgr.EnsureSessionContext(ctx)
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			return err
 		}
 		st, err := sess.AcceptStream()
 		if err != nil {
-			// The server closes the session when a tunnel is paused. smux may not
-			// report IsClosed yet, so explicitly discard the failed session before
-			// the retry loop asks for a replacement.
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			mgr.resetSession()
-			time.Sleep(reconnectRetryDelay)
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(reconnectRetryDelay):
+			}
 			continue
 		}
 		go func(s io.ReadWriteCloser) {
-			if err := serveIncomingStream(s, reporter); err != nil && !support.IsBenignCopyError(err) {
-				log.Printf("incoming stream error: %v", err)
+			if err := handleStream(s, reporter); err != nil && !support.IsBenignCopyError(err) {
+				log.Printf("%s: %v", errorLabel, err)
 			}
 		}(st)
 	}

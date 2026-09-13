@@ -9,6 +9,15 @@ Thanks for considering a contribution to ForTunnels Client.
 - Run checks before submitting:
   - `make check`
 
+## Quality tools
+
+The repository owns the versions of Go quality tools. Bootstrap them with
+`./scripts/ci/ensure-quality-tools.sh`; it installs pinned binaries only under
+`.cache/quality-tools/bin`, and the Make targets run it automatically when
+needed. Do not use global `go install` copies or `@latest` for repository
+checks. GolangCI-Lint v1.64.8 remains the enforcing lint lane; v2.12.2 is only
+used by the separate migration-report command.
+
 ## Pull Requests
 
 - Provide a clear description of the change and motivation.

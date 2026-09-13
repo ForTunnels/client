@@ -1,0 +1,131 @@
+version: "2"
+run:
+  timeout: 3m
+  modules-download-mode: readonly
+
+# "deadcode" is not a valid golangci-lint linter anymore (inactivated; use "unused" below).
+linters:
+  enable:
+    - bodyclose
+    - copyloopvar
+    - depguard
+    - dogsled
+    - dupl
+    - errname
+    - errorlint
+    - exhaustive
+    - funlen
+    - gochecknoinits
+    - goconst
+    - gocritic
+    - gocyclo
+    - goprintffuncname
+    - gosec
+    - lll
+    - misspell
+    - nakedret
+    - noctx
+    - nolintlint
+    - revive
+    - staticcheck
+    - unconvert
+    - unparam
+    - whitespace
+  settings:
+    depguard:
+      rules:
+        client:
+          files:
+            - $all
+          allow:
+            - $gostd
+            - github.com/fortunnels/client
+            - github.com/gorilla/websocket
+            - github.com/pion/dtls/v3
+            - github.com/quic-go/quic-go
+            - github.com/stretchr/testify
+            - github.com/xtaci/smux
+            - golang.org/x/crypto
+            - gopkg.in/yaml.v3
+    dupl:
+      threshold: 50
+    errcheck:
+      check-type-assertions: true
+      check-blank: true
+    funlen:
+      lines: 120
+      statements: 120
+    gocritic:
+      enabled-tags:
+        - diagnostic
+        - experimental
+        - opinionated
+        - performance
+        - style
+    gocyclo:
+      min-complexity: 35
+    govet:
+      enable:
+        - shadow
+    lll:
+      line-length: 200
+    misspell:
+      locale: US
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - bodyclose
+          - dupl
+          - errcheck
+          - funlen
+          - goconst
+          - gocritic
+          - gocyclo
+          - gosec
+          - revive
+        path: _test\.go
+      - linters:
+          - dupl
+        path: internal/config/flags\.go
+      - linters:
+          - revive
+        text: exported.*should have comment
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+formatters:
+  enable:
+    - gci
+    - gofmt
+    - goimports
+  settings:
+    gci:
+      sections:
+        - standard
+        - default
+        - prefix(github.com/fortunnels)
+    gofmt:
+      simplify: true
+    goimports:
+      local-prefixes:
+        - github.com/fortunnels
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

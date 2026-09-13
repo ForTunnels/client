@@ -5,6 +5,7 @@ package dataplane
 
 import (
 	"bufio"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"io"
@@ -12,32 +13,28 @@ import (
 	"net"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/fortunnels/client/internal/config"
 	"github.com/fortunnels/client/internal/support"
+	protocolv1 "github.com/fortunnels/client/shared/protocol/v1"
 )
 
 // StartDataPlaneServeIncomingUDP accepts smux streams opened by server UDP ingress and bridges to a local UDP backend.
 func StartDataPlaneServeIncomingUDP(serverURL, tunnelID string, runtime config.RuntimeSettings, reporter BackendStateReporter, dpAuthToken string) error {
-	mgr := NewManager(serverURL, tunnelID, dpAuthToken, time.Second, 30*time.Second, runtime)
-	defer mgr.Close()
-	for {
-		sess, err := mgr.EnsureSession()
-		if err != nil {
-			return err
-		}
-		st, err := sess.AcceptStream()
-		if err != nil {
-			time.Sleep(reconnectRetryDelay)
-			continue
-		}
-		go func(s io.ReadWriteCloser) {
-			if serveErr := serveIncomingUDPStream(s, reporter); serveErr != nil && !support.IsBenignCopyError(serveErr) {
-				log.Printf("incoming udp stream error: %v", serveErr)
-			}
-		}(st)
-	}
+	return StartDataPlaneServeIncomingUDPContext(context.Background(), serverURL, tunnelID, runtime, reporter, dpAuthToken, nil)
+}
+
+func StartDataPlaneServeIncomingUDPContext(
+	ctx context.Context,
+	serverURL, tunnelID string,
+	runtime config.RuntimeSettings,
+	reporter BackendStateReporter,
+	dpAuthToken string,
+	onLifecycle func(protocolv1.LifecycleEventPayload),
+) error {
+	return startIncomingDataPlaneContext(
+		ctx, serverURL, tunnelID, runtime, reporter, dpAuthToken, onLifecycle, serveIncomingUDPStream, "incoming udp stream error",
+	)
 }
 
 func serveIncomingUDPStream(stream io.ReadWriteCloser, reporter BackendStateReporter) error {
@@ -120,6 +117,10 @@ func bridgeUDPStreamAndBackend(stream io.ReadWriteCloser, uc *net.UDPConn) error
 
 // StartDataPlaneUDP listens on udpListen and forwards via WS/smux to server.
 func StartDataPlaneUDP(serverURL, tunnelID, dst, listenAddr string, runtime config.RuntimeSettings, enc config.EncryptionSettings, dpAuthToken string) error {
+	return StartDataPlaneUDPContext(context.Background(), serverURL, tunnelID, dst, listenAddr, runtime, enc, dpAuthToken)
+}
+
+func StartDataPlaneUDPContext(ctx context.Context, serverURL, tunnelID, dst, listenAddr string, runtime config.RuntimeSettings, enc config.EncryptionSettings, dpAuthToken string) error {
 	sess, cleanup, err := CreateDataPlaneSession(serverURL, tunnelID, runtime, dpAuthToken)
 	if err != nil {
 		return err
@@ -144,6 +145,16 @@ func StartDataPlaneUDP(serverURL, tunnelID, dst, listenAddr string, runtime conf
 		return fmt.Errorf("listen udp: %w", err)
 	}
 	defer uc.Close()
+	stopCloser := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = uc.Close()
+			cleanup()
+		case <-stopCloser:
+		}
+	}()
+	defer close(stopCloser)
 
 	// stop serving if tunnel was deleted on server (future enhancement via watchTunnelDeleted)
 	errCh := make(chan error, 2)
@@ -151,7 +162,12 @@ func StartDataPlaneUDP(serverURL, tunnelID, dst, listenAddr string, runtime conf
 	var lastSrc *net.UDPAddr
 	startUDPLocalToStream(wrapped, uc, errCh, &lastSrcMu, &lastSrc)
 	startStreamToUDPLocal(wrapped, uc, errCh, &lastSrcMu, &lastSrc)
-	return <-errCh
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case err := <-errCh:
+		return err
+	}
 }
 
 func sendUDPPreface(stream io.Writer, dst, tunnelID string) error {
