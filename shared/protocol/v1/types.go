@@ -118,6 +118,7 @@ type Tunnel struct {
 	ID                    string    `json:"id"`
 	UserID                int64     `json:"user_id,omitempty"`
 	OwnerLogin            string    `json:"owner_login,omitempty"`
+	CreatorIP             string    `json:"creator_ip,omitempty"`
 	Protocol              string    `json:"protocol"`
 	Kind                  string    `json:"kind,omitempty"`
 	TargetAddr            string    `json:"target_addr"`
