@@ -90,6 +90,9 @@ func isLocalServerHost(host string) bool {
 	case "localhost", "127.0.0.1", "::1":
 		return true
 	default:
+		if strings.HasSuffix(host, ".localhost") {
+			return true
+		}
 		// Docker Compose and other local test stacks use single-label service names.
 		return !strings.Contains(host, ".")
 	}

@@ -5,6 +5,7 @@ package security
 
 import (
 	"bytes"
+	"encoding/binary"
 	"io"
 	"testing"
 
@@ -161,21 +162,81 @@ func TestClientAEAD_Read_ShortBuffer(t *testing.T) {
 	writerBase := &mockReadWriteCloser{}
 	writer := psk.Wrap(writerBase, tunnelID).(*ClientAEAD)
 	testData := []byte("hello, world")
-	_, _ = writer.Write(testData)
+	_, err := writer.Write(testData)
+	require.NoError(t, err)
 
-	// Try to read with buffer smaller than decrypted data
+	// Read with a buffer smaller than the decrypted frame
 	readerBase := &mockReadWriteCloser{
 		readData: writerBase.writeData,
 	}
 	reader := psk.Wrap(readerBase, tunnelID).(*ClientAEAD)
 
-	// Small buffer should trigger ErrShortBuffer
+	// The rest of the frame is kept for the following reads, not dropped.
 	smallBuf := make([]byte, 5)
 	n, err := reader.Read(smallBuf)
-	assert.Equal(t, io.ErrShortBuffer, err, "ClientAEAD.Read() with small buffer error = %v, want %v")
-	if n != 5 {
-		t.Errorf("ClientAEAD.Read() with small buffer = %d, want 5", n)
+	require.NoError(t, err)
+	rest, err := io.ReadAll(reader)
+	require.NoError(t, err)
+	assert.Equal(t, string(testData), string(smallBuf[:n])+string(rest))
+}
+
+func TestClientPSK_Wrap_UsesRandomNoncePrefix(t *testing.T) {
+	psk := NewClientPSK([]byte("test-secret"))
+	first, second := &mockReadWriteCloser{}, &mockReadWriteCloser{}
+	_, err := psk.Wrap(first, "tunnel-123").Write([]byte("same payload"))
+	require.NoError(t, err)
+	_, err = psk.Wrap(second, "tunnel-123").Write([]byte("same payload"))
+	require.NoError(t, err)
+
+	prefix := func(frame []byte) []byte { return frame[lengthFieldSize : lengthFieldSize+noncePrefixSize] }
+	assert.NotEqual(t, prefix(first.writeData), prefix(second.writeData), "each connection needs its own nonce prefix")
+	assert.NotEqual(t, make([]byte, noncePrefixSize), prefix(first.writeData))
+	assert.NotEqual(t, first.writeData[frameHeaderSize:], second.writeData[frameHeaderSize:])
+}
+
+func TestClientAEAD_Read_LegacyZeroPrefixNonce(t *testing.T) {
+	psk := NewClientPSK([]byte("test-secret"))
+	legacy := psk.Wrap(&mockReadWriteCloser{}, "tunnel-123").(*ClientAEAD)
+	legacy.noncePrefix = [noncePrefixSize]byte{}
+	_, err := legacy.Write([]byte("legacy peer"))
+	require.NoError(t, err)
+	wire := legacy.base.(*mockReadWriteCloser).writeData
+
+	got, err := io.ReadAll(psk.Wrap(&mockReadWriteCloser{readData: wire}, "tunnel-123"))
+	require.NoError(t, err)
+	assert.Equal(t, "legacy peer", string(got))
+}
+
+func TestClientAEAD_Read_RejectsFrameLengthOutsideLimits(t *testing.T) {
+	for _, size := range []uint32{0, 15, maxAEADFrameBytes + 1, 0xFFFFFFFF} {
+		hdr := make([]byte, frameHeaderSize)
+		binary.BigEndian.PutUint32(hdr, size)
+		reader := NewClientPSK([]byte("test-secret")).Wrap(&mockReadWriteCloser{readData: hdr}, "tunnel-123")
+		_, err := reader.Read(make([]byte, 16))
+		require.ErrorIs(t, err, errFrameLength, "declared length %d", size)
 	}
+}
+
+func TestClientAEAD_Write_SplitsPayloadAboveFrameCap(t *testing.T) {
+	psk := NewClientPSK([]byte("test-secret"))
+	payload := bytes.Repeat([]byte{0x5a}, maxFramePlaintext+10)
+	base := &mockReadWriteCloser{}
+	n, err := psk.Wrap(base, "tunnel-123").Write(payload)
+	require.NoError(t, err)
+	require.Equal(t, len(payload), n)
+	require.EqualValues(t, maxAEADFrameBytes, binary.BigEndian.Uint32(base.writeData[:lengthFieldSize]))
+
+	got, err := io.ReadAll(psk.Wrap(&mockReadWriteCloser{readData: base.writeData}, "tunnel-123"))
+	require.NoError(t, err)
+	require.True(t, bytes.Equal(payload, got), "payload split across frames must round-trip")
+}
+
+func TestClientAEAD_Write_EmptyPayloadEmitsNoFrame(t *testing.T) {
+	base := &mockReadWriteCloser{}
+	n, err := NewClientPSK([]byte("test-secret")).Wrap(base, "tunnel-123").Write(nil)
+	require.NoError(t, err)
+	assert.Zero(t, n)
+	assert.Empty(t, base.writeData)
 }
 
 func TestClientAEAD_Read_InvalidFrame(t *testing.T) {

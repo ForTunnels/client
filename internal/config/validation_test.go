@@ -77,11 +77,13 @@ func TestValidateServerURL(t *testing.T) {
 		{"configured remote https", "https://staging.fortunnels.ru", false},
 		{"configured local http for tests", "http://127.0.0.1:8080", false},
 		{"configured localhost http for tests", "http://localhost:8080", false},
+		{"configured local admin http for tests", "http://admin.localhost:8080", false},
 		{"configured IPv6 localhost http for tests", "http://[::1]:8080", false},
 		{"configured docker service http for tests", "http://server:8080", false},
 		{"missing protocol", "127.0.0.1:8080", true},
 		{"invalid url", "http://", true},
 		{"remote http rejected", "http://staging.fortunnels.ru", true},
+		{"local-looking remote http rejected", "http://admin.localhost.example.com", true},
 		{"unsupported scheme rejected", "ftp://fortunnels.ru", true},
 	}
 
@@ -132,15 +134,18 @@ func TestValidateSuccess(t *testing.T) {
 
 func TestIsLocalServerHost(t *testing.T) {
 	tests := map[string]bool{
-		"localhost":             true,
-		"LOCALHOST":             true,
-		"localhost.":            true,
-		"127.0.0.1":             true,
-		"::1":                   true,
-		"server":                true,
-		"postgres":              true,
-		"staging.fortunnels.ru": false,
-		"127.0.0.2":             false,
+		"localhost":                        true,
+		"LOCALHOST":                        true,
+		"localhost.":                       true,
+		"fortunnels.localhost":             true,
+		"admin.fortunnels.localhost":       true,
+		"127.0.0.1":                        true,
+		"::1":                              true,
+		"server":                           true,
+		"postgres":                         true,
+		"staging.fortunnels.ru":            false,
+		"fortunnels.localhost.example.com": false,
+		"127.0.0.2":                        false,
 	}
 	for host, want := range tests {
 		require.Equal(t, want, isLocalServerHost(host), "isLocalServerHost(%q)", host)
