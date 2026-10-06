@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"io"
 	"os"
@@ -88,5 +89,36 @@ func TestParseUsesEnvSecrets(t *testing.T) {
 	}
 	if cfg.Token != "env-token" {
 		t.Fatalf("Token = %q, want %q", cfg.Token, "env-token")
+	}
+}
+
+func TestParseConfig_ValidationFailureReturnsExitCode2(t *testing.T) {
+	oldArgs := os.Args
+	oldFlag := flag.CommandLine
+	defer func() {
+		os.Args = oldArgs
+		flag.CommandLine = oldFlag
+	}()
+
+	flag.CommandLine = flag.NewFlagSet("client", flag.ContinueOnError)
+	flag.CommandLine.SetOutput(io.Discard)
+	os.Args = []string{"client", "-protocol", "tcp", "-local", "127.0.0.1:8080", "-ping-interval", "90s"}
+
+	cfg, err := parseConfig()
+	if cfg != nil {
+		t.Fatalf("parseConfig() config = %#v, want nil", cfg)
+	}
+	var codeErr *exitCodeError
+	if !errors.As(err, &codeErr) {
+		t.Fatalf("parseConfig() error = %v, want exitCodeError", err)
+	}
+	if codeErr.code != 2 {
+		t.Fatalf("exit code = %d, want 2", codeErr.code)
+	}
+	if got := exitCodeFor(err); got != 2 {
+		t.Fatalf("exitCodeFor() = %d, want 2", got)
+	}
+	if !strings.HasPrefix(err.Error(), "❌ ") {
+		t.Fatalf("validation error = %q, want the existing error marker", err)
 	}
 }

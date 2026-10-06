@@ -14,6 +14,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fortunnels/client/internal/config"
@@ -25,6 +26,14 @@ import (
 // Success means TCP dial reached the target; it does not imply HTTP/TLS readiness.
 // If nil, no reporting is done.
 type BackendStateReporter func(dst string, err error)
+
+const backendDialTimeout = 5 * time.Second
+
+var (
+	backendDialer        = net.Dialer{Timeout: backendDialTimeout}
+	dialBackend          = backendDialer.Dial
+	halfCloseIdleTimeout = 60 * time.Second
+)
 
 // NewBackendStateReporter returns a reporter that prints one-time messages on backend dial
 // down/up transitions for the requested protocol. Messages reflect transport-level
@@ -179,7 +188,7 @@ func serveIncomingStream(stream io.ReadWriteCloser, reporter BackendStateReporte
 	if dst == "" {
 		return fmt.Errorf("stream preface missing or empty dst")
 	}
-	bc, err := net.Dial("tcp", dst)
+	bc, err := dialBackend("tcp", dst)
 	if err != nil {
 		if reporter != nil {
 			reporter(dst, err)
@@ -203,32 +212,56 @@ func serveIncomingStream(stream io.ReadWriteCloser, reporter BackendStateReporte
 }
 
 func bridgeStreamAndBackend(stream io.ReadWriteCloser, streamReader io.Reader, backendConn net.Conn) error {
-	errCh := make(chan error, 2)
+	type copyResult struct {
+		err    error
+		reader *idleDeadlineReader
+	}
+	errCh := make(chan copyResult, 2)
+	backendReader := &idleDeadlineReader{reader: backendConn, deadline: backendConn, timeout: halfCloseIdleTimeout}
+	requestReader := &idleDeadlineReader{reader: streamReader, timeout: halfCloseIdleTimeout}
+	if deadline, ok := stream.(readDeadlineSetter); ok {
+		requestReader.deadline = deadline
+	}
 
 	go func() {
-		_, err := io.Copy(stream, backendConn)
+		_, err := io.Copy(stream, backendReader)
 		// Propagate response EOF to the server-side proxy. Without this, HTTP/1.0
 		// responses without Content-Length can hang until client timeout.
 		closeWriteOrClose(stream)
-		if err != nil && !support.IsBenignCopyError(err) {
-			errCh <- err
+		if err != nil && !isBenignBridgeCopyError(err) {
+			errCh <- copyResult{err: err, reader: backendReader}
 			return
 		}
-		errCh <- nil
+		errCh <- copyResult{reader: backendReader}
 	}()
 
 	go func() {
-		_, err := io.Copy(backendConn, streamReader)
+		_, err := io.Copy(backendConn, requestReader)
 		closeWriteIfPossible(backendConn)
-		if err != nil && !support.IsBenignCopyError(err) {
-			errCh <- err
+		if err != nil && !isBenignBridgeCopyError(err) {
+			errCh <- copyResult{err: err, reader: requestReader}
 			return
 		}
-		errCh <- nil
+		errCh <- copyResult{reader: requestReader}
 	}()
 
-	first := <-errCh
-	second := <-errCh
+	firstResult := <-errCh
+	first := firstResult.err
+	// Both copies already have a pending reader. Activating also sets the
+	// deadline now so a read blocked before half-close has a bounded idle wait.
+	remainingReader := backendReader
+	if firstResult.reader == backendReader {
+		remainingReader = requestReader
+	}
+	if deadlineErr := remainingReader.activate(); deadlineErr != nil && !isBenignBridgeCopyError(deadlineErr) {
+		// A failed deadline must not leave the remaining reader blocked forever.
+		_ = stream.Close()
+		_ = backendConn.Close()
+		if first == nil {
+			first = deadlineErr
+		}
+	}
+	second := (<-errCh).err
 	if first != nil {
 		if second != nil && !support.IsBenignCopyError(second) {
 			log.Printf("bridgeStreamAndBackend secondary error: %v", second)
@@ -239,6 +272,36 @@ func bridgeStreamAndBackend(stream io.ReadWriteCloser, streamReader io.Reader, b
 		log.Printf("bridgeStreamAndBackend secondary error: %v", second)
 	}
 	return second
+}
+
+type readDeadlineSetter interface{ SetReadDeadline(time.Time) error }
+
+type idleDeadlineReader struct {
+	reader   io.Reader
+	deadline readDeadlineSetter
+	timeout  time.Duration
+	active   atomic.Bool
+}
+
+func (r *idleDeadlineReader) activate() error {
+	r.active.Store(true)
+	if r.deadline != nil {
+		return r.deadline.SetReadDeadline(time.Now().Add(r.timeout))
+	}
+	return nil
+}
+
+func (r *idleDeadlineReader) Read(p []byte) (int, error) {
+	if r.active.Load() && r.deadline != nil {
+		if err := r.deadline.SetReadDeadline(time.Now().Add(r.timeout)); err != nil {
+			return 0, err
+		}
+	}
+	return r.reader.Read(p)
+}
+
+func isBenignBridgeCopyError(err error) bool {
+	return support.IsBenignCopyError(err) || os.IsTimeout(err)
 }
 
 func closeWriteIfPossible(c interface{}) {

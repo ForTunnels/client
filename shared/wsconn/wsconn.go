@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
 )
@@ -34,6 +35,7 @@ type Transport interface {
 	NextReader() (int, io.Reader, error)
 	NextWriter(int) (io.WriteCloser, error)
 	WriteMessage(int, []byte) error
+	WriteControl(int, []byte, time.Time) error
 	Close() error
 }
 
@@ -54,18 +56,13 @@ func (w *WSConn) Read(p []byte) (int, error) {
 	w.readMu.Lock()
 	defer w.readMu.Unlock()
 
-	// SECURITY: Check if requested buffer size exceeds limits
+	// Bound each read while accepting ordinary io.Reader caller buffers.
 	if len(p) > MaxWebSocketFrameSize {
-		return 0, errors.New("requested buffer size exceeds maximum allowed")
+		p = p[:MaxWebSocketFrameSize]
 	}
 
 	for {
 		if w.currReader == nil {
-			// Check if connection is closed before attempting to read
-			if w.conn == nil {
-				return 0, io.EOF
-			}
-
 			mt, r, err := w.conn.NextReader()
 			if err != nil {
 				// Check for connection closed errors to avoid panic on repeated reads
@@ -124,12 +121,11 @@ func (w *WSConn) Write(p []byte) (int, error) {
 
 // Close sends a normal close control frame and then closes the underlying socket.
 func (w *WSConn) Close() error {
-	w.writeMu.Lock()
-	defer w.writeMu.Unlock()
 	closePayload := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")
-	writeErr := w.conn.WriteMessage(websocket.CloseMessage, closePayload)
-	if writeErr != nil && !errors.Is(writeErr, websocket.ErrCloseSent) {
-		return writeErr
+	// Control writes have their own bounded deadline and may run alongside a
+	// data writer. Always close the socket, even if the peer cannot receive it.
+	if err := w.conn.WriteControl(websocket.CloseMessage, closePayload, time.Now().Add(time.Second)); err != nil {
+		return w.conn.Close()
 	}
 	return w.conn.Close()
 }

@@ -93,15 +93,6 @@ func SaveAuthtoken(path, token string) error {
 	}
 	fc := &FileConfig{Version: fileConfigVersion}
 	fc.Agent.Authtoken = token
-	if _, err := os.Stat(path); err == nil {
-		existing, err := LoadFileConfig(path)
-		if err == nil && existing != nil {
-			fc.Version = existing.Version
-			if fc.Version == 0 {
-				fc.Version = fileConfigVersion
-			}
-		}
-	}
 	out, err := yaml.Marshal(fc)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)

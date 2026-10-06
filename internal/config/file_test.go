@@ -58,10 +58,10 @@ func TestAuthtokenFromFileMissing(t *testing.T) {
 	require.Empty(t, AuthtokenFromFile())
 }
 
-func TestSaveAuthtokenMergeKeepsVersion(t *testing.T) {
+func TestSaveAuthtokenNormalizesVersion(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "fortunnels.yml")
-	initial := FileConfig{Version: 3}
+	initial := FileConfig{Version: 2}
 	initial.Agent.Authtoken = "old"
 	data, err := yaml.Marshal(initial)
 	require.NoError(t, err)
@@ -70,5 +70,9 @@ func TestSaveAuthtokenMergeKeepsVersion(t *testing.T) {
 	fc, err := LoadFileConfig(path)
 	require.NoError(t, err)
 	require.Equal(t, "ft_newtoken", fc.Agent.Authtoken)
-	require.Equal(t, 3, fc.Version)
+	require.Equal(t, fileConfigVersion, fc.Version)
+	require.NoError(t, ValidateFileConfig(fc))
+	info, err := os.Stat(path)
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
 }

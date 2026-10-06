@@ -76,6 +76,26 @@ func TestTrafficQuotaCanonicalIndicatorIsTerminal(t *testing.T) {
 	require.False(t, errors.Is(err, nil))
 }
 
+func TestTrafficQuota_CurrentIndicatorWithoutLegacyAlias(t *testing.T) {
+	resetAt := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+	payload := protocolv1.TunnelListResponse{
+		Tunnels: []protocolv1.Tunnel{{
+			ID: "tunnel-1",
+			LimitIndicators: &protocolv1.LimitIndicators{
+				MonthlyTraffic: protocolv1.MonthlyEgressLimitIndicator{
+					State:   protocolv1.LimitIndicatorStateExhausted,
+					ResetAt: &resetAt,
+				},
+			},
+		}},
+	}
+
+	err := trafficQuotaErrorFromPayload(payload, "tunnel-1")
+	var quotaErr *TrafficQuotaError
+	require.ErrorAs(t, err, &quotaErr)
+	require.True(t, quotaErr.ResetAt.Equal(resetAt))
+}
+
 func TestTrafficQuota_TerminalMessageOnceAcrossSources(t *testing.T) {
 	resetAt := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
 	out := &quotaTestOutput{}

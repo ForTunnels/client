@@ -9,13 +9,16 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/fortunnels/client/internal/config"
 )
 
 const (
-	wsReadTimeout       = 90 * time.Second
+	wsReadTimeout       = 2*config.MaxPingInterval + 15*time.Second
 	reconnectRetryDelay = 200 * time.Millisecond
 	udpMaxPacketSize    = 65535
 	udpDatagramMaxSize  = 65507
+	headerDataPlaneAuth = "X-Fortunnels-DP-Auth"
 	schemeHTTP          = "http"
 	schemeHTTPS         = "https"
 )
@@ -28,13 +31,13 @@ func encodePreface(fields map[string]string) ([]byte, error) {
 	return append(b, '\n'), nil
 }
 
-func buildWebSocketURL(serverURL, tunnelID, authToken string) (wsURL, origin string, err error) {
+func buildWebSocketURL(serverURL, tunnelID, authToken string) (wsURL, origin, token string, err error) {
 	u, parseErr := url.Parse(serverURL)
 	if parseErr != nil || u.Scheme == "" || u.Host == "" {
 		if parseErr == nil {
 			parseErr = fmt.Errorf("invalid server url")
 		}
-		return "", "", parseErr
+		return "", "", "", parseErr
 	}
 
 	var originScheme, wsScheme string
@@ -46,7 +49,7 @@ func buildWebSocketURL(serverURL, tunnelID, authToken string) (wsURL, origin str
 		originScheme = schemeHTTPS
 		wsScheme = "wss"
 	default:
-		return "", "", fmt.Errorf("unsupported server scheme: %s", u.Scheme)
+		return "", "", "", fmt.Errorf("unsupported server scheme: %s", u.Scheme)
 	}
 
 	u.Scheme = wsScheme
@@ -54,12 +57,10 @@ func buildWebSocketURL(serverURL, tunnelID, authToken string) (wsURL, origin str
 	q := u.Query()
 	q.Set("mode", "data")
 	q.Set("tunnel_id", tunnelID)
-	if strings.TrimSpace(authToken) != "" {
-		q.Set("auth", strings.TrimSpace(authToken))
-	}
+	q.Del("auth")
 	u.RawQuery = q.Encode()
 
 	wsURL = u.String()
 	origin = originScheme + "://" + u.Host
-	return wsURL, origin, nil
+	return wsURL, origin, strings.TrimSpace(authToken), nil
 }

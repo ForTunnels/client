@@ -54,6 +54,7 @@ linters-settings:
           - github.com/stretchr/testify
           - github.com/xtaci/smux
           - golang.org/x/crypto
+          - golang.org/x/term
           - gopkg.in/yaml.v3
 
 # "deadcode" is not a valid golangci-lint linter anymore (inactivated; use "unused" below).

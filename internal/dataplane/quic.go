@@ -21,29 +21,27 @@ const (
 	udpTransport        = "udp"
 )
 
+type quicDatagramConn interface {
+	SendDatagram([]byte) error
+	ReceiveDatagram(context.Context) ([]byte, error)
+}
+
 // startQUICDataPlaneUDP listens on udpListen and forwards via QUIC datagrams, receiving replies
-func StartQUICDataPlaneUDP(serverURL, quicPort, tunnelID, authToken, udpDst, udpListen string) error {
-	return StartQUICDataPlaneUDPContext(context.Background(), serverURL, quicPort, tunnelID, authToken, udpDst, udpListen)
-}
-
-func StartQUICDataPlaneUDPContext(ctx context.Context, serverURL, quicPort, tunnelID, authToken, udpDst, udpListen string) error {
-	return startQUICDataPlaneUDPContext(ctx, serverURL, quicPort, tunnelID, authToken, udpDst, udpListen, "")
-}
-
 func startQUICDataPlaneUDPContext(
 	ctx context.Context,
 	serverURL, quicPort, tunnelID, authToken, udpDst, udpListen, transportCAPath string,
 ) error {
 	laddr, err := net.ResolveUDPAddr(udpTransport, udpListen)
 	if err != nil {
-		return err
+		return permanentError{err}
 	}
 	uc, err := net.ListenUDP(udpTransport, laddr)
 	if err != nil {
-		return err
+		return permanentError{err}
 	}
+	defer uc.Close()
 
-	qc, err := dialQUICConnectionWithCA(serverURL, quicPort, true, transportCAPath)
+	qc, err := dialQUICConnectionWithCA(ctx, serverURL, quicPort, true, transportCAPath)
 	if err != nil {
 		return err
 	}
@@ -82,7 +80,7 @@ func startQUICDataPlaneUDPContext(
 func startQUICDatagramReceiver(
 	ctx context.Context,
 	cancel context.CancelFunc,
-	qc *quic.Conn,
+	qc quicDatagramConn,
 	uc *net.UDPConn,
 	flows *flowRegistry,
 ) {
@@ -115,12 +113,13 @@ func startQUICDatagramReceiver(
 func forwardUDPPacketsOverQUIC(
 	ctx context.Context,
 	cancel context.CancelFunc,
-	qc *quic.Conn,
+	qc quicDatagramConn,
 	uc *net.UDPConn,
 	tunnelID, authToken, udpDst string,
 	flows *flowRegistry,
 ) error {
 	buf := make([]byte, udpDatagramMaxSize)
+	var dropped uint64
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -141,7 +140,6 @@ func forwardUDPPacketsOverQUIC(
 			return err
 		}
 		flowID := raddr.String()
-		flows.set(flowID, raddr)
 		frame := map[string]interface{}{
 			"tunnel_id": tunnelID,
 			"flow_id":   flowID,
@@ -155,10 +153,42 @@ func forwardUDPPacketsOverQUIC(
 			cancel()
 			return err
 		}
+		// Register before sending so a prompt reply can find the source. A rejected
+		// first packet must not leave state behind for the lifetime of the session.
+		newFlow := flows.registerQUICFlow(flowID, raddr)
 		if err := qc.SendDatagram(b); err != nil {
+			if newFlow {
+				flows.discardQUICFlow(flowID, raddr)
+			}
+			var tooLarge *quic.DatagramTooLargeError
+			if errors.As(err, &tooLarge) {
+				dropped++
+				if dropped == 1 || dropped%100 == 0 {
+					log.Printf("QUIC datagram dropped: payload size=%d max=%d dropped=%d", len(b), tooLarge.MaxDatagramPayloadSize, dropped)
+				}
+				continue
+			}
 			cancel()
 			return err
 		}
+	}
+}
+
+func (r *flowRegistry) registerQUICFlow(flowID string, addr *net.UDPAddr) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, exists := r.flows[flowID]; exists {
+		return false
+	}
+	r.flows[flowID] = addr
+	return true
+}
+
+func (r *flowRegistry) discardQUICFlow(flowID string, addr *net.UDPAddr) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.flows[flowID] == addr {
+		delete(r.flows, flowID)
 	}
 }
 
@@ -169,23 +199,23 @@ func timeFromContext(ctx context.Context) time.Time {
 	return time.Now().Add(udpReadPollInterval)
 }
 
-func dialQUICConnection(serverURL, port string, enableDatagrams bool) (*quic.Conn, error) {
-	return dialQUICConnectionWithCA(serverURL, port, enableDatagrams, "")
-}
-
-func dialQUICConnectionWithCA(serverURL, port string, enableDatagrams bool, transportCAPath string) (*quic.Conn, error) {
+func dialQUICConnectionWithCA(ctx context.Context, serverURL, port string, enableDatagrams bool, transportCAPath string) (*quic.Conn, error) {
 	u, err := url.Parse(serverURL)
 	if err != nil {
-		return nil, err
+		return nil, permanentError{err}
 	}
 	host := net.JoinHostPort(u.Hostname(), port)
 	tlsConf, err := newTransportTLSConfig(serverURL, transportCAPath)
 	if err != nil {
-		return nil, err
+		return nil, permanentError{err}
 	}
 	quicCfg := &quic.Config{}
 	if enableDatagrams {
 		quicCfg.EnableDatagrams = true
 	}
-	return quic.DialAddr(context.Background(), host, tlsConf, quicCfg)
+	conn, err := quic.DialAddr(ctx, host, tlsConf, quicCfg)
+	if err != nil {
+		return nil, classifyTransportDialError(err)
+	}
+	return conn, nil
 }

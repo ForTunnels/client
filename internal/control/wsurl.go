@@ -8,8 +8,6 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
-
-	"github.com/gorilla/websocket"
 )
 
 // buildControlWebSocketURL builds a control-plane WebSocket URL for tunnel watch mode.
@@ -59,12 +57,4 @@ func wsDialHeaders(httpClient *http.Client, serverURL, bearer string) http.Heade
 		h.Add("Cookie", c.Name+"="+c.Value)
 	}
 	return h
-}
-
-func dialControlWebSocket(httpClient *http.Client, serverURL, tunnelID, bearer string) (*websocket.Conn, *http.Response, error) {
-	wsURL, err := buildControlWebSocketURL(serverURL, tunnelID)
-	if err != nil {
-		return nil, nil, err
-	}
-	return websocket.DefaultDialer.Dial(wsURL, wsDialHeaders(httpClient, serverURL, bearer))
 }

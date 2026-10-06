@@ -12,16 +12,6 @@ import (
 
 // computeDataPlaneAuth computes data-plane authentication token if requested.
 // Returns the computed token or empty string if no auth is configured.
-func ComputeDataPlaneAuth(tunnelID, dpAuthTokenFlag, dpAuthSecretFlag string) string {
-	if dpAuthTokenFlag != "" {
-		return dpAuthTokenFlag
-	}
-	if strings.TrimSpace(dpAuthSecretFlag) != "" {
-		return computeHMAC(dpAuthSecretFlag, tunnelID)
-	}
-	return ""
-}
-
 // ComputeDataPlaneAuthWithPSK is like ComputeDataPlaneAuth but falls back to psk when encrypt is true
 // and no explicit dp-auth secret/token was provided. This reuses stream encryption material for
 // local dev only; production should set --dp-auth-secret separately from --psk.

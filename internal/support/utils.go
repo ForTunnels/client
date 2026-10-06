@@ -10,7 +10,12 @@ import (
 	"math"
 	"net"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
+	"unicode/utf8"
+
+	"golang.org/x/term"
 )
 
 // isBenignCopyError returns true for normal connection close conditions
@@ -27,8 +32,7 @@ func IsBenignCopyError(err error) bool {
 		strings.Contains(msg, "closed pipe") ||
 		strings.Contains(msg, "broken pipe") ||
 		strings.Contains(msg, "connection reset by peer") ||
-		strings.Contains(msg, "stream closed") ||
-		strings.Contains(msg, "EOF") { // treat wrapped EOFs as benign
+		strings.Contains(msg, "stream closed") {
 		return true
 	}
 	return false
@@ -60,9 +64,15 @@ func ReadSecretFile(path string) (string, error) {
 	return secret, nil
 }
 
-// ReadSecretStdin reads a secret from stdin and trims whitespace.
+// ReadSecretStdin reads a hidden line from a terminal, or reads other stdin to EOF.
 func ReadSecretStdin(label string) (string, error) {
-	data, err := io.ReadAll(io.LimitReader(os.Stdin, maxSecretSize+1))
+	var data []byte
+	var err error
+	if term.IsTerminal(int(os.Stdin.Fd())) {
+		data, err = readTerminalSecret(label)
+	} else {
+		data, err = io.ReadAll(io.LimitReader(os.Stdin, maxSecretSize+1))
+	}
 	if err != nil {
 		return "", fmt.Errorf("read %s from stdin: %w", label, err)
 	}
@@ -74,6 +84,80 @@ func ReadSecretStdin(label string) (string, error) {
 		return "", fmt.Errorf("%s from stdin is empty", label)
 	}
 	return secret, nil
+}
+
+func readTerminalSecret(label string) (data []byte, err error) {
+	fd := int(os.Stdin.Fd())
+	interrupts := make(chan os.Signal, 1)
+	signal.Notify(interrupts, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(interrupts)
+	state, err := term.MakeRaw(fd)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { err = errors.Join(err, term.Restore(fd, state)) }()
+	defer func() { _, _ = fmt.Fprint(os.Stderr, "\r\n") }()
+	prompt := label
+	if label == "pass" {
+		prompt = "Password"
+	}
+	if _, err := fmt.Fprintf(os.Stderr, "%s: ", prompt); err != nil {
+		return nil, err
+	}
+	type result struct {
+		data []byte
+		err  error
+	}
+	completed := make(chan result, 1)
+	go func() {
+		// This reader never changes terminal mode, including after cancellation.
+		data, err := readTerminalSecretLine(os.Stdin)
+		completed <- result{data: data, err: err}
+	}()
+	select {
+	case read := <-completed:
+		return read.data, read.err
+	case <-interrupts:
+		// CLI parsing exits on this error. Restore terminal echo before returning.
+		return nil, errors.New("secret entry interrupted")
+	}
+}
+
+func readTerminalSecretLine(input io.Reader) ([]byte, error) {
+	data := make([]byte, 0, 64)
+	overflow := false
+	var next [1]byte
+	for {
+		if _, err := io.ReadFull(input, next[:]); err != nil {
+			if overflow {
+				return data, nil
+			}
+			return nil, err
+		}
+		switch next[0] {
+		case '\r', '\n', 4: // Enter or Ctrl+D
+			return data, nil
+		case 3: // Ctrl+C is delivered as input in raw terminal mode.
+			return nil, errors.New("secret entry interrupted")
+		case 8, 127: // Backspace / Delete
+			if !overflow && len(data) > 0 {
+				_, size := utf8.DecodeLastRune(data)
+				data = data[:len(data)-size]
+			}
+		case 21: // Ctrl+U clears the current line.
+			data = data[:0]
+			overflow = false
+		default:
+			if overflow {
+				continue
+			}
+			data = append(data, next[0])
+			if len(data) > maxSecretSize {
+				// Retain a sentinel, then drain the line before restoring echo.
+				overflow = true
+			}
+		}
+	}
 }
 
 // parsePort parses port from string, accepts forms like 8000 or :8000

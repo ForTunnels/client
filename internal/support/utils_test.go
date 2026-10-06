@@ -8,8 +8,101 @@ import (
 	"io"
 	"net"
 	"os"
+	"strings"
 	"testing"
 )
+
+func TestReadSecretStdinRedirected(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+		err   string
+	}{
+		{name: "no newline", input: "secret", want: "secret"},
+		{name: "CRLF and whitespace", input: " \tsecret\r\n", want: "secret"},
+		{name: "reads through EOF", input: "first\nsecond\n", want: "first\nsecond"},
+		{name: "empty", err: "pass from stdin is empty"},
+		{name: "whitespace", input: " \t\r\n", err: "pass from stdin is empty"},
+		{name: "at limit", input: strings.Repeat("x", maxSecretSize), want: strings.Repeat("x", maxSecretSize)},
+		{name: "over limit", input: strings.Repeat("x", maxSecretSize+1), err: "pass from stdin is too large"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			file, err := os.CreateTemp(t.TempDir(), "stdin")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer file.Close()
+			if _, writeErr := file.WriteString(tt.input); writeErr != nil {
+				t.Fatal(writeErr)
+			}
+			if _, seekErr := file.Seek(0, io.SeekStart); seekErr != nil {
+				t.Fatal(seekErr)
+			}
+			previous := os.Stdin
+			os.Stdin = file
+			defer func() { os.Stdin = previous }()
+			got, err := ReadSecretStdin("pass")
+			if tt.err != "" {
+				if err == nil || err.Error() != tt.err {
+					t.Fatalf("error = %v, want %q", err, tt.err)
+				}
+				return
+			}
+			if err != nil || got != tt.want {
+				t.Fatalf("secret length = %d, error = %v, want length %d", len(got), err, len(tt.want))
+			}
+		})
+	}
+}
+
+func TestReadTerminalSecretLine(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+		err   string
+	}{
+		{name: "Enter", input: "secret\rmore", want: "secret"},
+		{name: "newline", input: "secret\nmore", want: "secret"},
+		{name: "empty Enter", input: "\r"},
+		{name: "UTF8 backspace", input: "aé\x7fb\r", want: "ab"},
+		{name: "empty backspace", input: "\x08secret\r", want: "secret"},
+		{name: "clear line", input: "wrong\x15right\r", want: "right"},
+		{name: "Ctrl D", input: "secret\x04", want: "secret"},
+		{name: "Ctrl C", input: "secret\x03", err: "secret entry interrupted"},
+		{name: "read error", input: "secret", err: "EOF"},
+		{name: "at limit", input: strings.Repeat("x", maxSecretSize) + "\r", want: strings.Repeat("x", maxSecretSize)},
+		{name: "overflow sentinel", input: strings.Repeat("x", maxSecretSize+10), want: strings.Repeat("x", maxSecretSize+1)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := readTerminalSecretLine(strings.NewReader(tt.input))
+			if tt.err != "" {
+				if err == nil || err.Error() != tt.err {
+					t.Fatalf("error = %v, want %q", err, tt.err)
+				}
+				return
+			}
+			if err != nil || string(got) != tt.want {
+				t.Fatalf("secret length = %d, error = %v, want length %d", len(got), err, len(tt.want))
+			}
+		})
+	}
+}
+
+func TestReadTerminalSecretLineDrainsOverflow(t *testing.T) {
+	input := strings.NewReader(strings.Repeat("x", maxSecretSize+100) + "\rnext-line")
+	got, err := readTerminalSecretLine(input)
+	if err != nil || len(got) != maxSecretSize+1 {
+		t.Fatalf("length = %d, error = %v", len(got), err)
+	}
+	rest, err := io.ReadAll(input)
+	if err != nil || string(rest) != "next-line" {
+		t.Fatalf("overflow line was not fully consumed, remaining length = %d, error = %v", len(rest), err)
+	}
+}
 
 func TestIsBenignCopyError(t *testing.T) {
 	tests := []struct {
@@ -25,6 +118,7 @@ func TestIsBenignCopyError(t *testing.T) {
 		{"connection closed message", &net.OpError{Err: &os.SyscallError{Err: net.ErrClosed}}, true},
 		{"broken pipe message", errors.New("broken pipe"), true},
 		{"stream closed message", errors.New("stream closed"), true},
+		{"arbitrary EOF text", errors.New("remote returned EOF while processing request"), false},
 		{"real error", errors.New("permission denied"), false},
 	}
 

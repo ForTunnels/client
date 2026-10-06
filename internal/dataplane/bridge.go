@@ -4,11 +4,9 @@
 package dataplane
 
 import (
-	"errors"
+	"fmt"
 	"io"
 	"log"
-	"net"
-	"strings"
 
 	"github.com/fortunnels/client/internal/config"
 	sec "github.com/fortunnels/client/internal/security"
@@ -24,36 +22,17 @@ func SafeClose(c io.Closer) {
 	}
 }
 
-// PipeStreams bridges two connections with backpressure-aware buffers.
-func PipeStreams(a net.Conn, b io.ReadWriteCloser) {
-	bufA := make([]byte, 64*1024)
-	bufB := make([]byte, 64*1024)
-	done := make(chan struct{}, 2)
-	startBufferedCopy(a, b, bufB, "b->a", done)
-	startBufferedCopy(b, a, bufA, "a->b", done)
-	<-done
-	<-done
-}
-
-func startBufferedCopy(dst io.Writer, src io.Reader, buf []byte, label string, done chan<- struct{}) {
-	go func() {
-		_, err := io.CopyBuffer(dst, src, buf)
-		if err != nil && !errors.Is(err, io.EOF) && !isClosedPipe(err) {
-			log.Printf("client bridge: copy %s error: %v", label, err)
-		}
-		done <- struct{}{}
-	}()
-}
-
-func isClosedPipe(err error) bool {
-	return strings.Contains(err.Error(), "closed pipe")
-}
-
 // WrapClientStream wraps the stream with encryption if needed.
-func WrapClientStream(s io.ReadWriteCloser, tunnelID string, enc config.EncryptionSettings) io.ReadWriteCloser {
+func WrapClientStream(s io.ReadWriteCloser, tunnelID string, enc config.EncryptionSettings) (io.ReadWriteCloser, error) {
 	if !enc.Enabled {
-		return s
+		return s, nil
 	}
 	mgr := sec.NewClientPSK([]byte(enc.PSK))
-	return mgr.Wrap(s, tunnelID)
+	wrapped, err := mgr.Wrap(s, tunnelID)
+	if err != nil {
+		return nil, fmt.Errorf("wrap client stream: %w", err)
+	}
+	return wrapped, nil
 }
+
+var wrapClientStream = WrapClientStream

@@ -7,6 +7,8 @@ package dataplane
 
 import (
 	"bufio"
+	"context"
+	"encoding/binary"
 	"encoding/json"
 	"io"
 	"net"
@@ -87,7 +89,7 @@ func TestManager_EnsureSession_Stopped(t *testing.T) {
 	mgr := NewManager("http://example.com", "tunnel-123", "", time.Second, 30*time.Second, config.RuntimeSettings{})
 	mgr.Close()
 
-	_, err := mgr.EnsureSession()
+	_, err := mgr.EnsureSessionContext(context.Background())
 	require.Error(t, err, "Manager.EnsureSession() should return error when stopped")
 }
 
@@ -100,7 +102,7 @@ func TestManager_InitializeSession_Error(t *testing.T) {
 	done := make(chan struct{})
 	var err error
 	go func() {
-		_, err = mgr.EnsureSession()
+		_, err = mgr.EnsureSessionContext(context.Background())
 		close(done)
 	}()
 
@@ -229,6 +231,13 @@ func TestWriteUDPPacket_EdgeCases(t *testing.T) {
 	}
 }
 
+// lengthPrefixedUDPFrame builds a wire frame: a big-endian uint16 payload length followed by n zero bytes.
+func lengthPrefixedUDPFrame(n int) []byte {
+	frame := make([]byte, 2+n)
+	binary.BigEndian.PutUint16(frame, uint16(n))
+	return frame
+}
+
 func TestReadUDPPacket_EdgeCases(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -241,9 +250,15 @@ func TestReadUDPPacket_EdgeCases(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			// The largest UDP datagram payload is the contract limit (the server clamps to the same value).
 			name:    "max size packet",
-			frame:   append([]byte{0xFF, 0xFF}, make([]byte, 65535)...),
+			frame:   lengthPrefixedUDPFrame(udpDatagramMaxSize),
 			wantErr: false,
+		},
+		{
+			name:    "one byte over max size packet",
+			frame:   lengthPrefixedUDPFrame(udpDatagramMaxSize + 1),
+			wantErr: true,
 		},
 		{
 			name:    "incomplete payload",

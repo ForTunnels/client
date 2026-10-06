@@ -6,6 +6,7 @@ package dataplane
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -52,4 +53,28 @@ func loadTransportRootCAs(caPath string) (*x509.CertPool, error) {
 		return nil, fmt.Errorf("transport TLS: CA bundle contains no certificates")
 	}
 	return roots, nil
+}
+
+// classifyTransportDialError marks certificate verification failures as
+// permanent: retrying cannot change the server certificate or the configured
+// trust roots, so the reconnect loop must surface the reason instead of
+// backing off forever. Other dial errors stay retryable.
+func classifyTransportDialError(err error) error {
+	if err == nil || !isCertificateVerificationError(err) {
+		return err
+	}
+	return permanentError{err}
+}
+
+func isCertificateVerificationError(err error) bool {
+	var verifyErr *tls.CertificateVerificationError
+	var unknownAuthority x509.UnknownAuthorityError
+	var invalid x509.CertificateInvalidError
+	var hostname x509.HostnameError
+	if errors.As(err, &verifyErr) || errors.As(err, &unknownAuthority) ||
+		errors.As(err, &invalid) || errors.As(err, &hostname) {
+		return true
+	}
+	// pion/dtls and the platform verifier flatten some failures into text.
+	return strings.Contains(err.Error(), "x509:")
 }

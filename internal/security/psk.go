@@ -31,7 +31,10 @@ const (
 var errFrameLength = errors.New("security: invalid encrypted frame length")
 
 // PSK-based client-side crypto wrapper selector
-type ClientPSK struct{ secret []byte }
+type ClientPSK struct {
+	secret   []byte
+	randRead func([]byte) (int, error)
+}
 
 type ClientAEAD struct {
 	base        io.ReadWriteCloser
@@ -42,10 +45,10 @@ type ClientAEAD struct {
 }
 
 func NewClientPSK(secret []byte) *ClientPSK {
-	return &ClientPSK{secret: secret}
+	return &ClientPSK{secret: secret, randRead: rand.Read}
 }
 
-func (c *ClientPSK) Wrap(conn io.ReadWriteCloser, tunnelID string) io.ReadWriteCloser {
+func (c *ClientPSK) Wrap(conn io.ReadWriteCloser, tunnelID string) (io.ReadWriteCloser, error) {
 	// mirror server derivation: sha256(secret||tunnelID)
 	h := sha256.New()
 	h.Write(c.secret)
@@ -53,13 +56,21 @@ func (c *ClientPSK) Wrap(conn io.ReadWriteCloser, tunnelID string) io.ReadWriteC
 	key := h.Sum(nil)
 	a, err := chacha20poly1305.NewX(key)
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("create client AEAD: %w", err)
 	}
 	w := &ClientAEAD{base: conn, aead: a}
-	if _, randErr := rand.Read(w.noncePrefix[:]); randErr != nil {
-		return nil
+	readRandom := c.randRead
+	if readRandom == nil {
+		readRandom = rand.Read
 	}
-	return w
+	n, randErr := readRandom(w.noncePrefix[:])
+	if randErr != nil {
+		return nil, fmt.Errorf("generate nonce prefix: %w", randErr)
+	}
+	if n != len(w.noncePrefix) {
+		return nil, fmt.Errorf("generate nonce prefix: %w", io.ErrUnexpectedEOF)
+	}
+	return w, nil
 }
 
 // Read returns decrypted plaintext; a frame larger than p is delivered across

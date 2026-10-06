@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -19,11 +20,9 @@ import (
 	protocolv1 "github.com/fortunnels/client/shared/protocol/v1"
 )
 
-// StartDataPlaneServeIncomingUDP accepts smux streams opened by server UDP ingress and bridges to a local UDP backend.
-func StartDataPlaneServeIncomingUDP(serverURL, tunnelID string, runtime config.RuntimeSettings, reporter BackendStateReporter, dpAuthToken string) error {
-	return StartDataPlaneServeIncomingUDPContext(context.Background(), serverURL, tunnelID, runtime, reporter, dpAuthToken, nil)
-}
+var errInvalidUDPFrame = errors.New("invalid UDP frame")
 
+// StartDataPlaneServeIncomingUDP accepts smux streams opened by server UDP ingress and bridges to a local UDP backend.
 func StartDataPlaneServeIncomingUDPContext(
 	ctx context.Context,
 	serverURL, tunnelID string,
@@ -65,10 +64,10 @@ func serveIncomingUDPStream(stream io.ReadWriteCloser, reporter BackendStateRepo
 	if reporter != nil {
 		reporter(dst, nil)
 	}
-	return bridgeUDPStreamAndBackend(stream, uc)
+	return bridgeUDPStreamAndBackend(stream, uc, dst, reporter)
 }
 
-func bridgeUDPStreamAndBackend(stream io.ReadWriteCloser, uc *net.UDPConn) error {
+func bridgeUDPStreamAndBackend(stream io.ReadWriteCloser, uc *net.UDPConn, dst string, reporter BackendStateReporter) error {
 	errCh := make(chan error, 2)
 	go func() {
 		defer func() { _ = uc.Close() }()
@@ -85,10 +84,14 @@ func bridgeUDPStreamAndBackend(stream io.ReadWriteCloser, uc *net.UDPConn) error
 		}
 	}()
 	go func() {
+		defer stream.Close()
 		buf := make([]byte, udpMaxPacketSize)
 		for {
 			n, readErr := uc.Read(buf)
 			if readErr != nil {
+				if reporter != nil && !support.IsBenignCopyError(readErr) {
+					reporter(dst, readErr)
+				}
 				errCh <- readErr
 				return
 			}
@@ -116,11 +119,19 @@ func bridgeUDPStreamAndBackend(stream io.ReadWriteCloser, uc *net.UDPConn) error
 }
 
 // StartDataPlaneUDP listens on udpListen and forwards via WS/smux to server.
-func StartDataPlaneUDP(serverURL, tunnelID, dst, listenAddr string, runtime config.RuntimeSettings, enc config.EncryptionSettings, dpAuthToken string) error {
-	return StartDataPlaneUDPContext(context.Background(), serverURL, tunnelID, dst, listenAddr, runtime, enc, dpAuthToken)
-}
-
 func StartDataPlaneUDPContext(ctx context.Context, serverURL, tunnelID, dst, listenAddr string, runtime config.RuntimeSettings, enc config.EncryptionSettings, dpAuthToken string) error {
+	if _, _, _, err := buildWebSocketURL(serverURL, tunnelID, dpAuthToken); err != nil {
+		return permanentError{err}
+	}
+	laddr, err := net.ResolveUDPAddr("udp", listenAddr)
+	if err != nil {
+		return permanentError{fmt.Errorf("resolve udp listen: %w", err)}
+	}
+	uc, err := net.ListenUDP("udp", laddr)
+	if err != nil {
+		return permanentError{fmt.Errorf("listen udp: %w", err)}
+	}
+	defer uc.Close()
 	sess, cleanup, err := CreateDataPlaneSession(serverURL, tunnelID, runtime, dpAuthToken)
 	if err != nil {
 		return err
@@ -134,17 +145,10 @@ func StartDataPlaneUDPContext(ctx context.Context, serverURL, tunnelID, dst, lis
 	if prefaceErr := sendUDPPreface(stream, dst, tunnelID); prefaceErr != nil {
 		return prefaceErr
 	}
-	wrapped := WrapClientStream(stream, tunnelID, enc)
-	// local UDP socket
-	laddr, err := net.ResolveUDPAddr("udp", listenAddr)
+	wrapped, err := wrapClientStream(stream, tunnelID, enc)
 	if err != nil {
-		return fmt.Errorf("resolve udp listen: %w", err)
+		return permanentError{fmt.Errorf("wrap UDP stream: %w", err)}
 	}
-	uc, err := net.ListenUDP("udp", laddr)
-	if err != nil {
-		return fmt.Errorf("listen udp: %w", err)
-	}
-	defer uc.Close()
 	stopCloser := make(chan struct{})
 	go func() {
 		select {
@@ -188,8 +192,26 @@ func startUDPLocalToStream(
 	lastSrcMu *sync.RWMutex,
 	lastSrc **net.UDPAddr,
 ) {
+	startUDPLocalToPackets(func(payload []byte) error { return writeUDPPacket(wrapped, payload) }, 0,
+		uc, errCh, lastSrcMu, lastSrc)
+}
+
+type (
+	packetWriter func([]byte) error
+	packetReader func() ([]byte, error)
+)
+
+func startUDPLocalToPackets(
+	writePacket packetWriter,
+	maxPayload int,
+	uc *net.UDPConn,
+	errCh chan<- error,
+	lastSrcMu *sync.RWMutex,
+	lastSrc **net.UDPAddr,
+) {
 	go func() {
 		buf := make([]byte, udpMaxPacketSize)
+		var drops uint64
 		for {
 			n, src, err := uc.ReadFromUDP(buf)
 			if err != nil {
@@ -199,12 +221,16 @@ func startUDPLocalToStream(
 			if n <= 0 {
 				continue
 			}
+			if maxPayload > 0 && n > maxPayload {
+				logDTLSRecordDrop(&drops, n)
+				continue
+			}
 
 			lastSrcMu.Lock()
 			*lastSrc = src
 			lastSrcMu.Unlock()
 
-			if writeErr := writeUDPPacket(wrapped, buf[:n]); writeErr != nil {
+			if writeErr := writePacket(buf[:n]); writeErr != nil {
 				errCh <- writeErr
 				return
 			}
@@ -219,9 +245,24 @@ func startStreamToUDPLocal(
 	lastSrcMu *sync.RWMutex,
 	lastSrc **net.UDPAddr,
 ) {
+	startPacketsToUDPLocal(func() ([]byte, error) { return readUDPPacket(wrapped) }, uc, errCh, lastSrcMu, lastSrc)
+}
+
+func startPacketsToUDPLocal(
+	readPacket packetReader,
+	uc *net.UDPConn,
+	errCh chan<- error,
+	lastSrcMu *sync.RWMutex,
+	lastSrc **net.UDPAddr,
+) {
 	go func() {
+		var drops uint64
 		for {
-			packet, err := readUDPPacket(wrapped)
+			packet, err := readPacket()
+			if errors.Is(err, errInvalidDTLSRecord) || errors.Is(err, errDTLSRecordPayloadTooLarge) {
+				logDTLSRecordDrop(&drops, len(packet))
+				continue
+			}
 			if err != nil {
 				errCh <- err
 				return
@@ -260,8 +301,8 @@ func readUDPPacket(r io.Reader) ([]byte, error) {
 		return nil, err
 	}
 	n := int(binary.BigEndian.Uint16(hdr[:]))
-	if n <= 0 || n > udpMaxPacketSize {
-		return nil, io.ErrUnexpectedEOF
+	if n <= 0 || n > udpDatagramMaxSize {
+		return nil, fmt.Errorf("%w: payload length %d", errInvalidUDPFrame, n)
 	}
 	buf := make([]byte, n)
 	if _, err := io.ReadFull(r, buf); err != nil {

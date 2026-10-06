@@ -62,14 +62,6 @@ func TestLooksLikeHostPort(t *testing.T) {
 	}
 }
 
-func TestGetProtocolConstants(t *testing.T) {
-	http, https, tcp, udp := GetProtocolConstants()
-	assert.Equal(t, protoHTTP, http, "GetProtocolConstants() http = %v, want %v")
-	assert.Equal(t, protoHTTPS, https, "GetProtocolConstants() https = %v, want %v")
-	assert.Equal(t, protoTCP, tcp, "GetProtocolConstants() tcp = %v, want %v")
-	assert.Equal(t, protoUDP, udp, "GetProtocolConstants() udp = %v, want %v")
-}
-
 func TestSetDefaultServerURL(t *testing.T) {
 	original := defaultServerURL
 	defer func() {

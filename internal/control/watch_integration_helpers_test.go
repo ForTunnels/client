@@ -6,6 +6,7 @@
 package control
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"sync"
@@ -15,12 +16,12 @@ import (
 )
 
 func checkTunnelTerminalWithStatus(client *http.Client, serverURL, tunnelID, bearer string) (terminal bool, statusCode int) {
-	terminal, _, statusCode = checkTunnelTerminalWithStatusImpl(client, serverURL, tunnelID, bearer)
+	terminal, _, statusCode, _ = checkTunnelTerminalDetailedContext(context.Background(), client, serverURL, tunnelID, bearer)
 	return terminal, statusCode
 }
 
 func checkTunnelTerminal(client *http.Client, serverURL, tunnelID, bearer string) bool {
-	terminal, _, _ := checkTunnelTerminalWithStatusImpl(client, serverURL, tunnelID, bearer)
+	terminal, _ := checkTunnelTerminalWithStatus(client, serverURL, tunnelID, bearer)
 	return terminal
 }
 

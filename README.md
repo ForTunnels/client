@@ -194,6 +194,11 @@ TCP and UDP require a registered account; a Free account is valid within its lim
 - `-dp-auth-secret-file` - read data-plane secret from a file
 - `-dp-auth-secret-stdin` - read data-plane secret from stdin
 
+When stdin is a terminal, `-pass-stdin` prompts for the password, hides typed
+characters, and accepts Enter to submit. Piped or redirected input is read until
+EOF, so `printf '%s\n' "$PASSWORD" | ./bin/client tcp 5433 -login "$LOGIN" -pass-stdin`
+also works. Surrounding whitespace is trimmed in both cases.
+
 ### Positional arguments
 
 Short forms are supported:

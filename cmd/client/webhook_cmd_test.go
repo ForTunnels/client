@@ -19,6 +19,8 @@ type webhookTestServer struct {
 	mu      sync.Mutex
 	events  []map[string]any
 	rules   []map[string]any
+	updated map[string]any
+	updates int
 	created int
 	cleared int
 	dryRun  bool
@@ -109,7 +111,18 @@ func (s *webhookTestServer) handler() http.Handler {
 			writeJSON(w, 200, map[string]any{"deleted": true})
 			return
 		}
-		writeJSON(w, 200, map[string]any{"rule": map[string]any{"id": "rule-1", "version": 2}})
+		var input map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&input)
+		s.mu.Lock()
+		s.updated = input
+		s.updates++
+		s.mu.Unlock()
+		version := 1
+		if current, ok := input["version"].(float64); ok {
+			version = int(current) + 1
+		}
+		ruleID := strings.TrimPrefix(r.URL.Path, "/api/v1/webhook-test/mock/rules/")
+		writeJSON(w, 200, map[string]any{"rule": map[string]any{"id": ruleID, "version": version}})
 	})
 	return mux
 }
@@ -298,7 +311,7 @@ func TestWebhookMockCreateAndList(t *testing.T) {
 }
 
 func TestWebhookMockUpdateAndDelete(t *testing.T) {
-	url := newWebhookTestEnv(t, &webhookTestServer{})
+	url := newWebhookTestEnv(t, &webhookTestServer{rules: []map[string]any{{"id": "rule-1", "version": 1}}})
 	code, out, _ := captureCLI(t, "mock", "update", "--api-url", url, "--api-token", "test-token",
 		"--endpoint", "ep-1", "--rule", "rule-1", "--status", "202", "--version", "1")
 	if code != exitOK {
@@ -314,6 +327,91 @@ func TestWebhookMockUpdateAndDelete(t *testing.T) {
 	}
 	if !strings.Contains(out, "deleted rule=rule-1") {
 		t.Fatalf("unexpected delete output: %q", out)
+	}
+}
+
+func TestWebhookMockUpdatePreservesUnspecifiedFields(t *testing.T) {
+	server := &webhookTestServer{rules: []map[string]any{{
+		"id":        "rule-1",
+		"priority":  17,
+		"enabled":   false,
+		"method":    "POST",
+		"path_mode": "prefix",
+		"path":      "/original",
+		"response": map[string]any{
+			"status":   418,
+			"headers":  []map[string]any{{"name": "X-Preserved", "value": "yes"}},
+			"body":     "original response",
+			"delay_ms": 125,
+		},
+		"max_uses": 3,
+		"version":  5,
+	}}}
+	url := newWebhookTestEnv(t, server)
+	code, _, errOut := captureCLI(t, "mock", "update", "--api-url", url, "--api-token", "test-token",
+		"--endpoint", "ep-1", "--rule", "rule-1", "--max-uses", "13")
+	if code != exitOK {
+		t.Fatalf("update exit=%d want %d, stderr=%q", code, exitOK, errOut)
+	}
+
+	server.mu.Lock()
+	updated := server.updated
+	server.mu.Unlock()
+	if updated == nil {
+		t.Fatal("update request was not recorded")
+	}
+	for field, want := range map[string]any{
+		"priority":  float64(17),
+		"enabled":   false,
+		"method":    "POST",
+		"path_mode": "prefix",
+		"path":      "/original",
+		"max_uses":  float64(13),
+		"version":   float64(5),
+	} {
+		if got := updated[field]; got != want {
+			t.Errorf("update field %q = %#v, want %#v", field, got, want)
+		}
+	}
+	response, ok := updated["response"].(map[string]any)
+	if !ok {
+		t.Fatalf("update response = %#v, want object", updated["response"])
+	}
+	for field, want := range map[string]any{
+		"status":   float64(418),
+		"body":     "original response",
+		"delay_ms": float64(125),
+	} {
+		if got := response[field]; got != want {
+			t.Errorf("response field %q = %#v, want %#v", field, got, want)
+		}
+	}
+	headers, ok := response["headers"].([]any)
+	if !ok || len(headers) != 1 {
+		t.Fatalf("response headers = %#v, want one header", response["headers"])
+	}
+	header, ok := headers[0].(map[string]any)
+	if !ok || header["name"] != "X-Preserved" || header["value"] != "yes" {
+		t.Errorf("response header = %#v, want X-Preserved: yes", headers[0])
+	}
+}
+
+func TestWebhookMockUpdateUnknownRuleExit2(t *testing.T) {
+	server := &webhookTestServer{}
+	url := newWebhookTestEnv(t, server)
+	code, _, errOut := captureCLI(t, "mock", "update", "--api-url", url, "--api-token", "test-token",
+		"--endpoint", "ep-1", "--rule", "missing", "--max-uses", "13")
+	if code != exitError {
+		t.Fatalf("update exit=%d want %d", code, exitError)
+	}
+	if !strings.Contains(errOut, "rule not found") {
+		t.Fatalf("unexpected stderr: %q", errOut)
+	}
+	server.mu.Lock()
+	updates := server.updates
+	server.mu.Unlock()
+	if updates != 0 {
+		t.Fatalf("update requests = %d, want 0", updates)
 	}
 }
 

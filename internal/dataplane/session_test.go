@@ -6,6 +6,7 @@
 package dataplane
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -62,34 +63,6 @@ func TestNextBackoff(t *testing.T) {
 	}
 }
 
-func TestClientClose(t *testing.T) {
-	t.Run("nil client", func(_ *testing.T) {
-		var c *Client
-		// Should not panic
-		c.Close()
-	})
-
-	t.Run("valid client", func(_ *testing.T) {
-		// Create a minimal client for testing
-		// Note: Close() calls c.conn.Close() which will panic if conn is nil
-		// This is expected behavior - in real usage, conn is always set
-		// We only test nil client case which is handled
-		// For full client test, see integration tests
-	})
-}
-
-func TestClientSession(t *testing.T) {
-	// This test verifies Session() and Conn() methods
-	// We can't easily create a real Client without WebSocket, so we test with nil
-	c := &Client{}
-	if c.Session() != nil {
-		t.Error("Client.Session() should return nil for uninitialized client")
-	}
-	if c.Conn() != nil {
-		t.Error("Client.Conn() should return nil for uninitialized client")
-	}
-}
-
 func TestManagerClose(t *testing.T) {
 	mgr := NewManager("http://example.com", "tunnel-123", "", time.Second, 30*time.Second, config.RuntimeSettings{})
 	mgr.Close()
@@ -113,60 +86,10 @@ func TestManagerEnsureSession_Stopped(t *testing.T) {
 	mgr.Close()
 
 	// EnsureSession should return error when stopped
-	_, err := mgr.EnsureSession()
+	_, err := mgr.EnsureSessionContext(context.Background())
 	require.Error(t, err, "Manager.EnsureSession() should return error when stopped")
 	if err.Error() != "stopped" {
 		t.Errorf("Manager.EnsureSession() error = %q, want %q", err.Error(), "stopped")
-	}
-}
-
-func TestNewWSSmuxClient_Integration(t *testing.T) {
-	// Create a test WebSocket server
-	upgrader := websocket.Upgrader{
-		CheckOrigin: func(_ *http.Request) bool {
-			return true
-		},
-	}
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := upgrader.Upgrade(w, r, nil)
-		if err != nil {
-			return
-		}
-		defer conn.Close()
-
-		// Echo messages back
-		for {
-			mt, message, err := conn.ReadMessage()
-			if err != nil {
-				break
-			}
-			if err := conn.WriteMessage(mt, message); err != nil {
-				break
-			}
-		}
-	}))
-	defer server.Close()
-
-	// Convert http:// to ws://
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	serverURL := strings.TrimPrefix(wsURL, "ws://")
-
-	runtime := config.RuntimeSettings{
-		PingInterval:          30 * 1000000000,
-		PingTimeout:           5 * 1000000000,
-		WatchInterval:         10 * 1000000000,
-		SmuxKeepAliveInterval: 30 * 1000000000,
-		SmuxKeepAliveTimeout:  90 * 1000000000,
-	}
-
-	// This will fail because we need a proper smux server, but we can test the connection part
-	_, err := NewWSSmuxClient("http://"+serverURL, "test-tunnel", runtime, "")
-	// The error is expected because smux.Client needs proper initialization
-	if err != nil {
-		if !strings.Contains(err.Error(), "smux") && !strings.Contains(err.Error(), "ws dial") {
-			t.Errorf("NewWSSmuxClient() unexpected error: %v", err)
-		}
 	}
 }
 
@@ -240,7 +163,7 @@ func TestManager_SessionDialParams(t *testing.T) {
 }
 
 func TestBuildWebSocketURL(t *testing.T) {
-	wsURL, origin, err := buildWebSocketURL("https://example.com", "tunnel-123", "")
+	wsURL, origin, _, err := buildWebSocketURL("https://example.com", "tunnel-123", "")
 	require.NoError(t, err, "buildWebSocketURL() unexpected error: %v")
 	if !strings.HasPrefix(wsURL, "wss://example.com/ws") {
 		t.Errorf("wsURL = %q, want prefix wss://example.com/ws", wsURL)
@@ -253,8 +176,8 @@ func TestBuildWebSocketURL(t *testing.T) {
 	}
 }
 
-func TestBuildWebSocketURL_WithAuthToken(t *testing.T) {
-	wsURL, origin, err := buildWebSocketURL("https://example.com", "tunnel-123", "token with spaces/+")
+func TestBuildWebSocketURL_OmitsAuthFromQuery(t *testing.T) {
+	wsURL, origin, _, err := buildWebSocketURL("https://example.com", "tunnel-123", "token with spaces/+")
 	require.NoError(t, err, "buildWebSocketURL() unexpected error: %v")
 
 	u, err := url.Parse(wsURL)
@@ -264,7 +187,49 @@ func TestBuildWebSocketURL_WithAuthToken(t *testing.T) {
 	require.Equal(t, "/ws", u.Path)
 	require.Equal(t, "data", u.Query().Get("mode"))
 	require.Equal(t, "tunnel-123", u.Query().Get("tunnel_id"))
-	require.Equal(t, "token with spaces/+", u.Query().Get("auth"))
-	require.Contains(t, wsURL, "auth=")
+	require.Empty(t, u.Query().Get("auth"))
+	require.NotContains(t, wsURL, "auth=")
 	require.Equal(t, "https://example.com", origin)
+}
+
+func TestManager_SessionDialParams_SetsAuthHeader(t *testing.T) {
+	mgr := NewManager("https://example.com?auth=stale", "tunnel-123", " token ", time.Second, time.Minute, config.RuntimeSettings{})
+	raw, headers := mgr.sessionDialParams()
+	parsed, err := url.Parse(raw)
+	require.NoError(t, err)
+	require.Empty(t, parsed.Query().Get("auth"))
+	require.Equal(t, "token", headers.Get(headerDataPlaneAuth))
+	require.Equal(t, "https://example.com", headers.Get("Origin"))
+}
+
+func TestManager_SessionDialParams_CreateDataPlaneSessionSetsAuthHeader(t *testing.T) {
+	type handshake struct{ header, query string }
+	observed := make(chan handshake, 1)
+	release := make(chan struct{})
+	upgrader := websocket.Upgrader{CheckOrigin: func(_ *http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observed <- handshake{r.Header.Get(headerDataPlaneAuth), r.URL.Query().Get("auth")}
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		<-release
+	}))
+	defer server.Close()
+	defer close(release)
+	settings := config.RuntimeSettings{
+		PingInterval: time.Minute, PingTimeout: time.Second,
+		SmuxKeepAliveInterval: time.Minute, SmuxKeepAliveTimeout: 2 * time.Minute,
+	}
+	_, cleanup, err := CreateDataPlaneSession(server.URL+"?auth=stale", "t1", settings, " fresh-header-token ")
+	require.NoError(t, err)
+	defer cleanup()
+	select {
+	case got := <-observed:
+		require.Equal(t, "fresh-header-token", got.header)
+		require.Empty(t, got.query)
+	case <-time.After(time.Second):
+		t.Fatal("data-plane handshake not observed")
+	}
 }

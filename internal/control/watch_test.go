@@ -7,16 +7,16 @@ package control
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
-	"errors"
 	"io"
-	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,6 +24,7 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/fortunnels/client/internal/config"
+	protocolv1 "github.com/fortunnels/client/shared/protocol/v1"
 )
 
 func TestCheckTunnelDeleted(t *testing.T) {
@@ -112,6 +113,27 @@ func TestCheckTunnelTerminalWithStatus_BearerAuth(t *testing.T) {
 	assert.Equal(t, "Bearer my-bearer-token", capturedAuth)
 }
 
+func TestCheckTunnelTerminal_NonOKJSONBodyIsNotTerminal(t *testing.T) {
+	for _, statusCode := range []int{http.StatusServiceUnavailable, http.StatusTooManyRequests, http.StatusBadGateway} {
+		t.Run(http.StatusText(statusCode), func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(statusCode)
+				_, _ = io.WriteString(w, `{"error":"temporarily unavailable"}`)
+			}))
+			defer server.Close()
+
+			terminal, status, code, terminalErr := checkTunnelTerminalDetailedContext(
+				context.Background(), server.Client(), server.URL, "t1", "",
+			)
+			assert.False(t, terminal)
+			assert.Empty(t, status)
+			assert.Equal(t, statusCode, code)
+			assert.NoError(t, terminalErr)
+		})
+	}
+}
+
 func TestCheckTunnelTerminalWithStatus_CookieJarAuth(t *testing.T) {
 	jar, err := cookiejar.New(nil)
 	assert.NoError(t, err)
@@ -154,96 +176,6 @@ func TestCheckTunnelTerminalWithStatus_ForbiddenTerminal(t *testing.T) {
 	assert.Equal(t, http.StatusForbidden, status)
 }
 
-func TestRunFallbackLifecyclePoller_401TriggersOnTerminalAndFriendlyMessage(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	defer server.Close()
-
-	client := &http.Client{Timeout: 2 * time.Second}
-	terminalCh := make(chan struct{}, 1)
-	var onTerminalCalled int
-	onTerminal := func() {
-		onTerminalCalled++
-		close(terminalCh)
-	}
-
-	output := captureStdout(t, func() {
-		go RunFallbackLifecyclePoller(client, server.URL, "t1", "", onTerminal, 20*time.Millisecond)
-		select {
-		case <-terminalCh:
-			// Good
-		case <-time.After(2 * time.Second):
-			t.Fatal("onTerminal was not called within 2s")
-		}
-	})
-
-	assert.Equal(t, 1, onTerminalCalled, "onTerminal must be called exactly once")
-	assert.Contains(t, output, MsgTunnelRemovedExiting, "friendly removal message must be printed")
-}
-
-func TestRunFallbackLifecyclePoller_401NoWarnSpam(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	defer server.Close()
-
-	client := &http.Client{Timeout: 2 * time.Second}
-	terminalCh := make(chan struct{}, 1)
-	onTerminal := func() { close(terminalCh) }
-
-	var logBuf bytes.Buffer
-	log.SetOutput(&logBuf)
-	defer log.SetOutput(os.Stderr)
-
-	go RunFallbackLifecyclePoller(client, server.URL, "t1", "", onTerminal, 20*time.Millisecond)
-	select {
-	case <-terminalCh:
-		// Good
-	case <-time.After(2 * time.Second):
-		t.Fatal("onTerminal was not called within 2s")
-	}
-
-	logOut := logBuf.String()
-	assert.NotContains(t, logOut, "[WARN] auth failure", "401 removal path must not emit WARN spam")
-	assert.NotContains(t, logOut, "[WARN] repeated poll failures", "401 removal path must not emit WARN spam")
-}
-
-func TestRunFallbackLifecyclePoller_403TerminalAndNoWarnSpam(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusForbidden)
-	}))
-	defer server.Close()
-
-	client := &http.Client{Timeout: 2 * time.Second}
-	terminalCh := make(chan struct{}, 1)
-	var onTerminalCalled int
-	onTerminal := func() {
-		onTerminalCalled++
-		close(terminalCh)
-	}
-
-	var logBuf bytes.Buffer
-	log.SetOutput(&logBuf)
-	defer log.SetOutput(os.Stderr)
-
-	output := captureStdout(t, func() {
-		go RunFallbackLifecyclePoller(client, server.URL, "t1", "", onTerminal, 20*time.Millisecond)
-		select {
-		case <-terminalCh:
-			// Good
-		case <-time.After(2 * time.Second):
-			t.Fatal("onTerminal was not called within 2s")
-		}
-	})
-
-	assert.Equal(t, 1, onTerminalCalled, "onTerminal must be called exactly once for 403")
-	assert.Contains(t, output, MsgTunnelRemovedExiting, "friendly removal message must be printed for 403")
-	logOut := logBuf.String()
-	assert.NotContains(t, logOut, "[WARN] auth failure", "403 removal path must not emit WARN spam")
-	assert.NotContains(t, logOut, "[WARN] repeated poll failures", "403 removal path must not emit WARN spam")
-}
-
 func TestCheckTunnelTerminalWithStatus_ExpiredDetection(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -268,27 +200,6 @@ func TestCheckTunnelTerminalWithStatus_DeletedDetection(t *testing.T) {
 	terminal, status := checkTunnelTerminalWithStatus(client, server.URL, "t1", "")
 	assert.True(t, terminal)
 	assert.Equal(t, http.StatusOK, status)
-}
-
-func TestDetectAuthMode(t *testing.T) {
-	jar, _ := cookiejar.New(nil)
-	tests := []struct {
-		name   string
-		client *http.Client
-		bearer string
-		want   authMode
-	}{
-		{"bearer", &http.Client{}, "token", authModeBearer},
-		{"session-cookie", &http.Client{Jar: jar}, "", authModeSessionCookie},
-		{"unauthenticated", &http.Client{}, "", authModeUnauth},
-		{"bearer overrides jar", &http.Client{Jar: jar}, "t", authModeBearer},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := detectAuthMode(tt.client, tt.bearer)
-			assert.Equal(t, tt.want, got)
-		})
-	}
 }
 
 func TestExtractPayload(t *testing.T) {
@@ -462,32 +373,17 @@ func TestHandleControlMessageSuppressesInitialActive(t *testing.T) {
 func TestTunnelStatusFromPayload(t *testing.T) {
 	tests := []struct {
 		name     string
-		payload  map[string]interface{}
+		payload  any
 		expected string
 	}{
 		{
-			name:     "uses top-level status",
-			payload:  map[string]interface{}{"status": statusActive},
+			name:     "uses typed top-level status",
+			payload:  protocolv1.TunnelListResponse{Status: statusActive},
 			expected: statusActive,
-		},
-		{
-			name: "uses first tunnel status when top-level missing",
-			payload: map[string]interface{}{
-				"tunnels": []interface{}{map[string]interface{}{"status": statusPaused}},
-			},
-			expected: statusPaused,
-		},
-		{
-			name:     "top-level status takes precedence",
-			expected: statusActive,
-			payload: map[string]interface{}{
-				"status":  statusActive,
-				"tunnels": []interface{}{map[string]interface{}{"status": statusPaused}},
-			},
 		},
 		{
 			name:     "empty when no status",
-			payload:  map[string]interface{}{"exists": true},
+			payload:  protocolv1.TunnelListResponse{},
 			expected: "",
 		},
 	}
@@ -569,98 +465,92 @@ func TestUpdateFallbackInterval_Zero(t *testing.T) {
 	}
 }
 
-func TestLogWebSocketReadError(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-	}{
-		{
-			name: "normal closure",
-			err:  &websocket.CloseError{Code: websocket.CloseNormalClosure},
-		},
-		{
-			name: "going away",
-			err:  &websocket.CloseError{Code: websocket.CloseGoingAway},
-		},
-		{
-			name: "abnormal closure",
-			err:  &websocket.CloseError{Code: websocket.CloseAbnormalClosure},
-		},
-		{
-			name: "other close code",
-			err:  &websocket.CloseError{Code: websocket.CloseInternalServerErr},
-		},
-		{
-			name: "EOF",
-			err:  io.EOF,
-		},
-		{
-			name: "unexpected EOF",
-			err:  io.ErrUnexpectedEOF,
-		},
-		{
-			name: "other error",
-			err:  errors.New("some error"),
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Should not panic
-			logWebSocketReadError(tt.err)
-		})
-	}
-}
-
-func TestConnectWebSocket_Integration(t *testing.T) {
-	upgrader := websocket.Upgrader{
-		CheckOrigin: func(r *http.Request) bool {
-			return true
-		},
-	}
-
+func TestRunLifecycleWatch_ReconnectsAfterServerClose(t *testing.T) {
+	var upgrades atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upgrader := websocket.Upgrader{}
 		conn, err := upgrader.Upgrade(w, r, nil)
 		if err != nil {
 			return
 		}
 		defer conn.Close()
-
-		// Send subscribed message
-		msg := map[string]interface{}{"type": "subscribed"}
-		conn.WriteJSON(msg)
-
-		// Send pong
-		msg = map[string]interface{}{"type": "pong"}
-		conn.WriteJSON(msg)
-
-		// Keep connection alive for a bit
-		time.Sleep(100 * time.Millisecond)
+		if upgrades.Add(1) == 1 {
+			return
+		}
+		_ = conn.WriteJSON(map[string]any{"type": "tunnel_closed", "payload": map[string]string{"reason": "user_request"}})
+		_, _, _ = conn.ReadMessage()
 	}))
 	defer server.Close()
-
-	// Convert http:// to ws://
-	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
-	serverURL := strings.TrimPrefix(wsURL, "ws://")
-
-	runtime := config.RuntimeSettings{
-		PingInterval:  1 * 1000000000,  // 1 second
-		PingTimeout:   500 * 1000000,   // 500ms
-		WatchInterval: 10 * 1000000000, // 10 seconds
-	}
-
-	// This function runs indefinitely, so we'll test it with a timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	terminal := make(chan error, 1)
 	done := make(chan struct{})
 	go func() {
-		ConnectWebSocket("http://"+serverURL, "test-tunnel", runtime)
+		RunLifecycleWatch(ctx, server.Client(), server.URL, "t1", "", config.RuntimeSettings{PingInterval: time.Hour, PingTimeout: time.Second}, func(err error) { terminal <- err })
 		close(done)
 	}()
-
-	// Wait a bit to see if it connects
+	select {
+	case err := <-terminal:
+		assert.EqualError(t, err, MsgTunnelRemovedExiting)
+	case <-ctx.Done():
+		t.Fatal("terminal event did not arrive after reconnect")
+	}
 	select {
 	case <-done:
-		// Function returned (expected)
-	case <-time.After(2 * time.Second):
-		// Still running (expected for this function)
+	case <-time.After(time.Second):
+		t.Fatal("watch did not end after terminal event")
+	}
+	assert.GreaterOrEqual(t, upgrades.Load(), int32(2))
+}
+
+func TestRunLifecycleWatch_StopsOnContextCancel(t *testing.T) {
+	for _, holdHandshake := range []bool{false, true} {
+		name := "connected"
+		if holdHandshake {
+			name = "handshake"
+		}
+		t.Run(name, func(t *testing.T) {
+			requested, release := make(chan struct{}), make(chan struct{})
+			var once sync.Once
+			unblock := func() { once.Do(func() { close(release) }) }
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if holdHandshake {
+					close(requested)
+					<-release
+				}
+				upgrader := websocket.Upgrader{}
+				conn, err := upgrader.Upgrade(w, r, nil)
+				if err != nil {
+					return
+				}
+				defer conn.Close()
+				if !holdHandshake {
+					close(requested)
+				}
+				_, _, _ = conn.ReadMessage()
+			}))
+			defer server.Close()
+			defer unblock()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			var terminal atomic.Bool
+			done := make(chan struct{})
+			go func() {
+				RunLifecycleWatch(ctx, server.Client(), server.URL, "t1", "", config.RuntimeSettings{PingInterval: time.Hour, PingTimeout: time.Second}, func(error) { terminal.Store(true) })
+				close(done)
+			}()
+			select {
+			case <-requested:
+			case <-time.After(time.Second):
+				t.Fatal("watch did not start")
+			}
+			cancel()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("watch ignored cancellation")
+			}
+			assert.False(t, terminal.Load())
+		})
 	}
 }

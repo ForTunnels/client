@@ -10,9 +10,13 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/fortunnels/client/internal/support"
 )
+
+// MaxPingInterval bounds the WebSocket ping interval before its read deadline expires.
+const MaxPingInterval = 45 * time.Second
 
 // Validate ensures CLI configuration is consistent.
 func Validate(cfg *Config) error {
@@ -37,7 +41,23 @@ func Validate(cfg *Config) error {
 	if err := ValidateUDPExposeLocalOptions(cfg); err != nil {
 		return err
 	}
+	if err := validateKeepaliveIntervals(cfg); err != nil {
+		return err
+	}
 	warnOnSensitiveFlagUsage(cfg)
+	return nil
+}
+
+func validateKeepaliveIntervals(cfg *Config) error {
+	if cfg.PingInterval <= 0 || cfg.PingInterval > MaxPingInterval {
+		return fmt.Errorf("ping interval must be greater than 0 and no more than %s", MaxPingInterval)
+	}
+	if cfg.PingTimeout <= 0 {
+		return fmt.Errorf("ping timeout must be greater than 0")
+	}
+	if cfg.SmuxInterval <= 0 || cfg.SmuxTimeout <= cfg.SmuxInterval {
+		return fmt.Errorf("smux keepalive timeout must be greater than interval, and interval must be greater than 0")
+	}
 	return nil
 }
 

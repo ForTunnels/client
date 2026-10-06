@@ -6,9 +6,8 @@ package control
 import (
 	"context"
 	"encoding/json"
-	"errors"
-	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -20,6 +19,7 @@ import (
 	"github.com/fortunnels/client/internal/config"
 	"github.com/fortunnels/client/internal/dataplane"
 	protocolv1 "github.com/fortunnels/client/shared/protocol/v1"
+	"github.com/fortunnels/client/shared/wsconn"
 )
 
 var debugLogging = strings.Contains(
@@ -34,13 +34,6 @@ func logDebug(format string, args ...any) {
 }
 
 // authMode describes how the lifecycle poller authenticates to the server.
-type authMode string
-
-const (
-	authModeSessionCookie authMode = "session-cookie"
-	authModeBearer        authMode = "bearer"
-	authModeUnauth        authMode = "unauthenticated"
-)
 
 type Watcher struct {
 	out        Output
@@ -77,29 +70,10 @@ func NewLifecycleWatcher(out Output, onTerminal func(error)) *Watcher {
 	return w
 }
 
-func detectAuthMode(client *http.Client, bearer string) authMode {
-	if strings.TrimSpace(bearer) != "" {
-		return authModeBearer
-	}
-	if client != nil && client.Jar != nil {
-		// Cookie jar indicates session auth was used (login-local)
-		return authModeSessionCookie
-	}
-	return authModeUnauth
-}
-
 // ConnectWebSocket connects a control-plane WebSocket and manages keepalive/watchers.
-func ConnectWebSocket(serverURL, tunnelID string, runtime config.RuntimeSettings) {
-	NewWatcher(nil).ConnectWebSocketWithAuth(nil, serverURL, tunnelID, "", runtime)
-}
-
 // ConnectWebSocketWithAuth connects a control-plane WebSocket with optional bearer token
 // or session-cookie client for fallback tunnel polling. httpClient may be nil; when
 // provided with a cookie jar (session auth), fallback HTTP polls use it for auth.
-func ConnectWebSocketWithAuth(httpClient *http.Client, serverURL, tunnelID, bearer string, runtime config.RuntimeSettings) {
-	NewWatcher(nil).ConnectWebSocketWithAuth(httpClient, serverURL, tunnelID, bearer, runtime)
-}
-
 // RunLifecycleWatch feeds terminal control-plane events to the shared CLI
 // coordinator. It owns the WebSocket until the command is canceled or the
 // server sends a terminal event.
@@ -111,41 +85,96 @@ func RunLifecycleWatch(
 	onTerminal func(error),
 ) {
 	w := NewLifecycleWatcher(nil, onTerminal)
-	conn, resp, err := dialControlWebSocket(httpClient, serverURL, tunnelID, bearer)
+	backoff := lifecycleBackoffInitial
+	for ctx.Err() == nil {
+		terminal, watchErr := w.lifecycleWatchAttempt(ctx, httpClient, serverURL, tunnelID, bearer, runtime)
+		if terminal || ctx.Err() != nil {
+			return
+		}
+		if watchErr != nil {
+			logDebug("lifecycle WebSocket unavailable; next retry in %s", backoff)
+		}
+		timer := time.NewTimer(backoff)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+		backoff = min(backoff*2, lifecycleBackoffMax)
+	}
+}
+
+const (
+	lifecycleBackoffInitial = time.Second
+	lifecycleBackoffMax     = 30 * time.Second
+	lifecycleReadTimeout    = 90 * time.Second
+)
+
+func (w *Watcher) lifecycleWatchAttempt(ctx context.Context, httpClient *http.Client, serverURL, tunnelID, bearer string, runtime config.RuntimeSettings) (bool, error) {
+	wsURL, err := buildControlWebSocketURL(serverURL, tunnelID)
+	if err != nil {
+		return false, err
+	}
+	dialer := *websocket.DefaultDialer
+	baseDial := dialer.NetDialContext
+	if baseDial == nil {
+		baseDial = (&net.Dialer{}).DialContext
+	}
+	stopDialCancellation := func() bool { return false }
+	dialer.NetDialContext = func(dialCtx context.Context, network, addr string) (net.Conn, error) {
+		dialConn, dialErr := baseDial(dialCtx, network, addr)
+		if dialErr == nil {
+			stopDialCancellation = context.AfterFunc(ctx, func() { _ = dialConn.Close() })
+		}
+		return dialConn, dialErr
+	}
+	conn, resp, err := dialer.DialContext(ctx, wsURL, wsDialHeaders(httpClient, serverURL, bearer))
+	defer stopDialCancellation()
 	if resp != nil && resp.Body != nil {
 		defer resp.Body.Close()
 	}
 	if err != nil {
-		logDebug("lifecycle WebSocket unavailable: %v", err)
-		return
+		return false, err
 	}
 	defer conn.Close()
-
-	closed := make(chan struct{})
-	go func() {
-		select {
-		case <-ctx.Done():
-			_ = conn.Close()
-		case <-closed:
-		}
-	}()
-	defer close(closed)
-
+	conn.SetReadLimit(wsconn.MaxWebSocketMessageSize)
+	if deadlineErr := conn.SetReadDeadline(time.Now().Add(lifecycleReadTimeout)); deadlineErr != nil {
+		return false, deadlineErr
+	}
+	conn.SetPongHandler(func(string) error { return conn.SetReadDeadline(time.Now().Add(lifecycleReadTimeout)) })
 	ackCh := make(chan struct{}, 1)
 	intervalCh := make(chan time.Duration, 1)
 	done := make(chan struct{})
 	var doneOnce sync.Once
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		select {
+		case <-ctx.Done():
+		case <-done:
+		}
+		_ = conn.Close()
+	}()
+	defer func() { doneOnce.Do(func() { close(done) }); <-closed }()
+	pingInterval, pingTimeout := runtime.PingInterval, runtime.PingTimeout
+	if pingInterval <= 0 {
+		pingInterval = 30 * time.Second
+	}
+	if pingTimeout <= 0 {
+		pingTimeout = 5 * time.Second
+	}
+	ticker := time.NewTicker(pingInterval)
+	defer ticker.Stop()
+	dataplane.StartControlPingLoop(done, &doneOnce, conn, ticker, pingTimeout)
 	lastStatus := statusActive
 	for {
 		var msg protocolv1.Envelope
 		if readErr := conn.ReadJSON(&msg); readErr != nil {
-			if ctx.Err() == nil {
-				logWebSocketReadError(readErr)
-			}
-			return
+			return false, readErr
 		}
 		if w.handleControlMessage(msg, ackCh, intervalCh, done, &doneOnce, runtime.WatchInterval, &lastStatus) {
-			return
+			return true, nil
 		}
 	}
 }
@@ -153,103 +182,9 @@ func RunLifecycleWatch(
 // ConnectWebSocketWithAuth connects a control-plane WebSocket with optional bearer token
 // or session-cookie client for fallback tunnel polling. httpClient may be nil; when
 // provided with a cookie jar (session auth), fallback HTTP polls use it for auth.
-func (w *Watcher) ConnectWebSocketWithAuth(httpClient *http.Client, serverURL, tunnelID, bearer string, runtime config.RuntimeSettings) {
-	conn, resp, err := dialControlWebSocket(httpClient, serverURL, tunnelID, bearer)
-	if resp != nil && resp.Body != nil {
-		defer resp.Body.Close()
-	}
-	if err != nil {
-		log.Printf("Failed to connect to WebSocket: %v", err)
-		return
-	}
-	defer conn.Close()
-
-	w.out.Printf("✅ WebSocket connected\n")
-
-	ticker := time.NewTicker(runtime.PingInterval)
-	defer ticker.Stop()
-
-	done := make(chan struct{})
-	var doneOnce sync.Once
-
-	ackCh := make(chan struct{}, 1)
-	intervalCh := make(chan time.Duration, 1)
-
-	w.warnOnMissingAck(ackCh)
-	w.startFallbackTunnelWatcherWithAuth(httpClient, serverURL, tunnelID, bearer, time.Second, intervalCh, done, &doneOnce)
-	w.startControlMessageReader(conn, ackCh, intervalCh, done, &doneOnce, runtime.WatchInterval)
-
-	dataplane.StartControlPingLoop(done, &doneOnce, conn, ticker, runtime.PingTimeout)
-}
-
-func (w *Watcher) warnOnMissingAck(ackCh <-chan struct{}) {
-	go func() {
-		select {
-		case <-ackCh:
-			return
-		case <-time.After(5 * time.Second):
-			logDebug("falling back from WS subscription ACK path to HTTP poll path")
-			w.out.Println("⚠️ No 'subscribed' ACK received from server; relying on fallback monitoring")
-		}
-	}()
-}
-
 // startFallbackTunnelWatcherWithAuth runs a background goroutine that polls the server
 // for tunnel terminal state. httpClient may be nil; when provided with a cookie jar
 // (session auth), it is used for authenticated requests. bearer is used when non-empty.
-func (w *Watcher) startFallbackTunnelWatcherWithAuth(
-	httpClient *http.Client,
-	serverURL, tunnelID, bearer string,
-	initialInterval time.Duration,
-	intervalCh <-chan time.Duration,
-	done chan struct{},
-	doneOnce *sync.Once,
-) {
-	client := ensurePollClient(httpClient)
-	mode := detectAuthMode(client, bearer)
-	logDebug("fallback tunnel watcher: auth mode=%s tunnelID=%s", mode, tunnelID)
-
-	go func() {
-		ticker := time.NewTicker(initialInterval)
-		defer ticker.Stop()
-		var consecutiveFailures int
-		lastStatus := statusActive
-		for {
-			select {
-			case <-ticker.C:
-				terminal, status, statusCode := checkTunnelTerminalWithStatusImpl(client, serverURL, tunnelID, bearer)
-				if terminal {
-					w.out.Println(MsgTunnelRemovedExiting)
-					doneOnce.Do(func() { close(done) })
-					return
-				}
-				if status != "" && status != lastStatus {
-					w.printTunnelStatusChange(status)
-					lastStatus = status
-				}
-				if statusCode >= 400 {
-					consecutiveFailures++
-					if statusCode == 403 {
-						log.Printf("[WARN] auth failure from fallback GET tunnelID=%s status=%d", tunnelID, statusCode)
-					}
-					if consecutiveFailures >= 2 {
-						log.Printf("[WARN] repeated poll failures tunnelID=%s status=%d (attempt %d)",
-							tunnelID, statusCode, consecutiveFailures)
-					}
-				} else {
-					consecutiveFailures = 0
-				}
-			case d := <-intervalCh:
-				if d > 0 {
-					ticker.Reset(d)
-				}
-			case <-done:
-				return
-			}
-		}
-	}()
-}
-
 // StatusExpired is the wire value for expired tunnel status.
 const StatusExpired = protocolv1.StatusExpired
 
@@ -285,58 +220,9 @@ func ensurePollClient(httpClient *http.Client) *http.Client {
 // is deleted or expired. Use for HTTP/TCP/UDP modes that lack in-band lifecycle.
 // httpClient may be nil; when provided with a cookie jar (session auth), it is used
 // for authenticated requests. bearer is used when non-empty.
-func RunFallbackLifecyclePoller(httpClient *http.Client, serverURL, tunnelID, bearer string, onTerminal func(), interval time.Duration) {
-	NewWatcher(nil).RunFallbackLifecyclePoller(httpClient, serverURL, tunnelID, bearer, onTerminal, interval)
-}
-
-func (w *Watcher) RunFallbackLifecyclePoller(httpClient *http.Client, serverURL, tunnelID, bearer string, onTerminal func(), interval time.Duration) {
-	client := ensurePollClient(httpClient)
-	mode := detectAuthMode(client, bearer)
-	logDebug("fallback lifecycle poller: auth mode=%s tunnelID=%s", mode, tunnelID)
-
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	var consecutiveFailures int
-	lastStatus := statusActive
-	for {
-		<-ticker.C
-		terminal, status, statusCode := checkTunnelTerminalWithStatusImpl(client, serverURL, tunnelID, bearer)
-		if terminal {
-			w.out.Println(MsgTunnelRemovedExiting)
-			onTerminal()
-			return
-		}
-		if status != "" && status != lastStatus {
-			w.printTunnelStatusChange(status)
-			lastStatus = status
-		}
-		if statusCode >= 400 {
-			consecutiveFailures++
-			if statusCode == 403 {
-				log.Printf("[WARN] auth failure from fallback GET tunnelID=%s status=%d", tunnelID, statusCode)
-			}
-			if consecutiveFailures >= 2 {
-				log.Printf("[WARN] repeated poll failures tunnelID=%s status=%d (attempt %d)",
-					tunnelID, statusCode, consecutiveFailures)
-			}
-		} else {
-			consecutiveFailures = 0
-		}
-	}
-}
-
 // RunFallbackLifecyclePollerWithReason is the authenticated canonical-indicator
 // fallback used by the CLI serving loops. The callback receives a non-nil
 // TrafficQuotaError only for combined monthly traffic exhaustion.
-func RunFallbackLifecyclePollerWithReason(
-	httpClient *http.Client,
-	serverURL, tunnelID, bearer string,
-	onTerminal func(error),
-	interval time.Duration,
-) {
-	RunFallbackLifecyclePollerWithReasonContext(context.Background(), httpClient, serverURL, tunnelID, bearer, onTerminal, interval)
-}
-
 // RunFallbackLifecyclePollerWithReasonContext is the cancellation-aware form
 // used by serving commands. Polling stops as soon as another signal wins.
 func RunFallbackLifecyclePollerWithReasonContext(
@@ -361,18 +247,6 @@ func RunFallbackLifecyclePollerWithReasonContext(
 			}
 		}
 	}
-}
-
-func checkTunnelTerminalWithStatusImpl(client *http.Client, serverURL, tunnelID, bearer string) (terminal bool, status string, statusCode int) {
-	terminal, status, statusCode, err := checkTunnelTerminalDetailed(client, serverURL, tunnelID, bearer)
-	if err != nil {
-		logDebug("fallback status check failed: %v", err)
-	}
-	return terminal, status, statusCode
-}
-
-func checkTunnelTerminalDetailed(client *http.Client, serverURL, tunnelID, bearer string) (terminal bool, status string, statusCode int, terminalErr error) {
-	return checkTunnelTerminalDetailedContext(context.Background(), client, serverURL, tunnelID, bearer)
 }
 
 func checkTunnelTerminalDetailedContext(parent context.Context, client *http.Client, serverURL, tunnelID, bearer string) (terminal bool, status string, statusCode int, terminalErr error) {
@@ -400,6 +274,9 @@ func checkTunnelTerminalDetailedContext(parent context.Context, client *http.Cli
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
 		logDebug("%d from GET /api/tunnels → terminal (tunnel removed or access revoked)", resp.StatusCode)
 		return true, "", resp.StatusCode, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return false, "", resp.StatusCode, nil
 	}
 
 	var payload protocolv1.TunnelListResponse
@@ -430,13 +307,34 @@ func trafficQuotaErrorFromPayload(payload protocolv1.TunnelListResponse, tunnelI
 			continue
 		}
 		indicators := tunnel.LimitIndicators
-		if indicators.Traffic.State != protocolv1.LimitIndicatorStateExhausted &&
-			indicators.MonthlyEgress.State != protocolv1.LimitIndicatorStateExhausted {
+		monthlyIndicators := []protocolv1.MonthlyEgressLimitIndicator{
+			indicators.MonthlyTraffic,
+			indicators.MonthlyEgress,
+		}
+		trafficExhausted := indicators.Traffic.State == protocolv1.LimitIndicatorStateExhausted
+		monthlyExhausted := false
+		resetAt := time.Time{}
+		for _, monthly := range monthlyIndicators {
+			if monthly.State != protocolv1.LimitIndicatorStateExhausted {
+				continue
+			}
+			monthlyExhausted = true
+			if monthly.ResetAt != nil {
+				resetAt = monthly.ResetAt.UTC()
+			}
+			break
+		}
+		if !trafficExhausted && !monthlyExhausted {
 			continue
 		}
-		resetAt := time.Time{}
-		if indicators.MonthlyEgress.ResetAt != nil {
-			resetAt = indicators.MonthlyEgress.ResetAt.UTC()
+		if trafficExhausted && !monthlyExhausted {
+			for _, monthly := range monthlyIndicators {
+				if monthly.ResetAt == nil {
+					continue
+				}
+				resetAt = monthly.ResetAt.UTC()
+				break
+			}
 		}
 		return &TrafficQuotaError{ResetAt: resetAt}
 	}
@@ -444,25 +342,15 @@ func trafficQuotaErrorFromPayload(payload protocolv1.TunnelListResponse, tunnelI
 }
 
 func tunnelStatusFromPayload(payload any) string {
-	switch v := payload.(type) {
-	case protocolv1.TunnelListResponse:
-		if v.Status != "" {
-			return v.Status
-		}
-		if len(v.Tunnels) > 0 && v.Tunnels[0].Status != "" {
-			return v.Tunnels[0].Status
-		}
-	case map[string]interface{}:
-		if status, ok := v["status"].(string); ok && status != "" {
-			return status
-		}
-		if tunnels, ok := v["tunnels"].([]interface{}); ok && len(tunnels) > 0 {
-			if tunnel, ok := tunnels[0].(map[string]interface{}); ok {
-				if status, ok := tunnel["status"].(string); ok {
-					return status
-				}
-			}
-		}
+	response, ok := payload.(protocolv1.TunnelListResponse)
+	if !ok {
+		return ""
+	}
+	if response.Status != "" {
+		return response.Status
+	}
+	if len(response.Tunnels) > 0 && response.Tunnels[0].Status != "" {
+		return response.Tunnels[0].Status
 	}
 	return ""
 }
@@ -479,47 +367,6 @@ func (w *Watcher) printTunnelStatusChange(status string) {
 		w.out.Printf("⚪ Tunnel status changed to not active on server\n")
 	default:
 		w.out.Printf("📨 Tunnel status changed on server: %s\n", status)
-	}
-}
-
-func (w *Watcher) startControlMessageReader(
-	conn *websocket.Conn,
-	ackCh chan<- struct{},
-	intervalCh chan<- time.Duration,
-	done chan struct{},
-	doneOnce *sync.Once,
-	defaultWatchInterval time.Duration,
-) {
-	go func() {
-		lastStatus := statusActive
-		for {
-			var msg protocolv1.Envelope
-			if err := conn.ReadJSON(&msg); err != nil {
-				logWebSocketReadError(err)
-				doneOnce.Do(func() { close(done) })
-				return
-			}
-			if w.handleControlMessage(msg, ackCh, intervalCh, done, doneOnce, defaultWatchInterval, &lastStatus) {
-				return
-			}
-		}
-	}()
-}
-
-func logWebSocketReadError(err error) {
-	var ce *websocket.CloseError
-	switch {
-	case errors.As(err, &ce):
-		switch ce.Code {
-		case websocket.CloseNormalClosure, websocket.CloseGoingAway, websocket.CloseAbnormalClosure:
-			log.Printf("WebSocket closed by server (code %d). Exiting cleanly.", ce.Code)
-		default:
-			log.Printf("WebSocket closed (code %d): %v. Exiting.", ce.Code, err)
-		}
-	case errors.Is(err, io.EOF), strings.Contains(err.Error(), "unexpected EOF"):
-		log.Printf("WebSocket connection ended (EOF). Exiting cleanly.")
-	default:
-		log.Printf("WebSocket ended: %v", err)
 	}
 }
 

@@ -158,10 +158,10 @@ func Parse() (*Config, error) {
 	fs.IntVar(&backoffMaxSec, "backoff-max", backoffMaxSec, "Max reconnect backoff seconds")
 	fs.StringVar(&cfg.UDPListen, "udp-listen", cfg.UDPListen, "Advanced reverse UDP mode: local UDP listen address (e.g. :5353); requires -udp-dst")
 	fs.StringVar(&cfg.UDPDst, "udp-dst", cfg.UDPDst, "Advanced reverse UDP mode: server-side UDP destination (e.g. 127.0.0.1:53); requires -udp-listen")
-	fs.StringVar(&durations.PingInterval, "ping-interval", "30s", "WebSocket ping interval")
-	fs.StringVar(&durations.PingTimeout, "ping-timeout", "10s", "WebSocket ping write deadline")
-	fs.StringVar(&durations.SmuxInterval, "smux-keepalive-interval", "25s", "smux keepalive interval")
-	fs.StringVar(&durations.SmuxTimeout, "smux-keepalive-timeout", "60s", "smux keepalive timeout")
+	fs.StringVar(&durations.PingInterval, "ping-interval", cfg.PingInterval.String(), "WebSocket ping interval (maximum "+MaxPingInterval.String()+")")
+	fs.StringVar(&durations.PingTimeout, "ping-timeout", cfg.PingTimeout.String(), "WebSocket ping write deadline")
+	fs.StringVar(&durations.SmuxInterval, "smux-keepalive-interval", cfg.SmuxInterval.String(), "smux keepalive interval")
+	fs.StringVar(&durations.SmuxTimeout, "smux-keepalive-timeout", cfg.SmuxTimeout.String(), "smux keepalive timeout")
 	fs.StringVar(&durations.WatchInterval, "watch-interval", "10s", "HTTP poll interval after WS subscription (fallback monitoring)")
 	fs.BoolVar(&cfg.WatchWS, "watch", cfg.WatchWS, "Watch tunnel updates over WebSocket (runs until closed)")
 	fs.BoolVar(&cfg.Encrypt, "encrypt", cfg.Encrypt, "Enable client-side stream encryption (PSK)")
@@ -220,11 +220,6 @@ func Parse() (*Config, error) {
 	return cfg, nil
 }
 
-// GetProtocolConstants exposes protocol literals for other packages.
-func GetProtocolConstants() (http, https, tcp, udp string) {
-	return protoHTTP, protoHTTPS, protoTCP, protoUDP
-}
-
 // defaultConfig returns Config populated with CLI defaults.
 func defaultConfig() *Config {
 	return &Config{
@@ -235,6 +230,10 @@ func defaultConfig() *Config {
 		UserID:         "default",
 		BackoffInitial: time.Second,
 		BackoffMax:     30 * time.Second,
+		PingInterval:   30 * time.Second,
+		PingTimeout:    10 * time.Second,
+		SmuxInterval:   25 * time.Second,
+		SmuxTimeout:    60 * time.Second,
 		WatchInterval:  10 * time.Second,
 		PSK:            "",
 		QUICPort:       defaultQUICPort,

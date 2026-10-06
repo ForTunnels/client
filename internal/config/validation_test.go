@@ -6,6 +6,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -124,12 +125,58 @@ func TestValidateTargetAddress(t *testing.T) {
 }
 
 func TestValidateSuccess(t *testing.T) {
-	cfg := &Config{
-		Protocol:   protoHTTP,
-		ServerURL:  "https://example.com",
-		TargetAddr: "127.0.0.1:8000",
-	}
+	cfg := defaultConfig()
+	cfg.ServerURL = "https://example.com"
+	cfg.TargetAddr = "127.0.0.1:8000"
 	require.NoError(t, Validate(cfg))
+}
+
+func TestValidateKeepaliveIntervals(t *testing.T) {
+	tests := []struct {
+		name    string
+		update  func(*Config)
+		wantErr string
+	}{
+		{name: "defaults"},
+		{name: "maximum ping interval", update: func(cfg *Config) { cfg.PingInterval = MaxPingInterval }},
+		{
+			name: "ping interval above maximum",
+			update: func(cfg *Config) {
+				cfg.PingInterval = 90 * time.Second
+			},
+			wantErr: "ping interval",
+		},
+		{
+			name:    "ping timeout must be positive",
+			update:  func(cfg *Config) { cfg.PingTimeout = 0 },
+			wantErr: "ping timeout",
+		},
+		{
+			name: "smux timeout must exceed interval",
+			update: func(cfg *Config) {
+				cfg.SmuxTimeout = cfg.SmuxInterval - time.Second
+			},
+			wantErr: "smux keepalive timeout",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := defaultConfig()
+			cfg.ServerURL = "https://example.com"
+			cfg.TargetAddr = "127.0.0.1:8000"
+			if tt.update != nil {
+				tt.update(cfg)
+			}
+			err := Validate(cfg)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.Error(t, err)
+			require.Contains(t, err.Error(), tt.wantErr)
+		})
+	}
 }
 
 func TestIsLocalServerHost(t *testing.T) {

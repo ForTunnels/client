@@ -8,8 +8,10 @@ package dataplane
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -165,6 +167,29 @@ func TestServeIncomingStream_DialFailureWritesSetupError(t *testing.T) {
 	// Do not assert on error message text (e.g. "refused") — it is OS/locale dependent
 }
 
+func TestServeIncomingStream_BackendDialTimeoutWritesSetupError(t *testing.T) {
+	previous := dialBackend
+	t.Cleanup(func() { dialBackend = previous })
+	timeoutErr := &net.OpError{Op: "dial", Net: "tcp", Err: os.ErrDeadlineExceeded}
+	dialBackend = func(network, address string) (net.Conn, error) {
+		require.Equal(t, "tcp", network)
+		require.Equal(t, "127.0.0.1:8080", address)
+		return nil, timeoutErr
+	}
+	stream := &mockTCPReadWriteCloser{readData: []byte(`{"dst":"127.0.0.1:8080","proto":"tcp"}` + "\n")}
+	var reported error
+	err := serveIncomingStream(stream, func(_ string, err error) { reported = err })
+	var netErr net.Error
+	require.ErrorAs(t, err, &netErr)
+	require.True(t, netErr.Timeout())
+	require.ErrorIs(t, reported, timeoutErr)
+	require.True(t, stream.closed)
+	require.Contains(t, string(stream.writeData), `"ok":false`)
+	require.Contains(t, string(stream.writeData), `"error":`)
+	require.True(t, strings.HasSuffix(string(stream.writeData), "\n"))
+	require.Equal(t, 5*time.Second, backendDialer.Timeout)
+}
+
 // TestServeIncomingStream_SuccessWritesSetupAck verifies that on successful backend dial,
 // the client writes a setup ack JSON before bridging traffic.
 func TestServeIncomingStream_SuccessWritesSetupAck(t *testing.T) {
@@ -317,5 +342,101 @@ func TestServeIncomingStream_HTTP10WithoutContentLength_Completes(t *testing.T) 
 		require.NoError(t, err)
 	case <-time.After(2 * time.Second):
 		t.Fatal("serveIncomingStream did not finish")
+	}
+}
+
+func tcpBridgeTestPair(t *testing.T) (*net.TCPConn, *net.TCPConn) {
+	t.Helper()
+	listener, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.ParseIP("127.0.0.1")})
+	require.NoError(t, err)
+	defer listener.Close()
+	peer, err := net.DialTCP("tcp", nil, listener.Addr().(*net.TCPAddr))
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = peer.Close() })
+	conn, err := listener.AcceptTCP()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = conn.Close() })
+	return conn, peer
+}
+
+func TestBridgeStreamAndBackend_HalfCloseIdleTimeoutCompletes(t *testing.T) {
+	previous := halfCloseIdleTimeout
+	halfCloseIdleTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { halfCloseIdleTimeout = previous })
+	stream, peer := tcpBridgeTestPair(t)
+	backend, backendPeer := net.Pipe()
+	defer backend.Close()
+	defer backendPeer.Close()
+	done := make(chan error, 1)
+	go func() { done <- bridgeStreamAndBackend(stream, bufio.NewReader(stream), backend) }()
+	require.NoError(t, backendPeer.Close())
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("half-closed bridge waited indefinitely for peer")
+	}
+	_ = peer // peer deliberately remains open until cleanup
+}
+
+type rejectedReadDeadlineStream struct{ *net.TCPConn }
+
+func (*rejectedReadDeadlineStream) SetReadDeadline(time.Time) error {
+	return errors.New("read deadline unavailable")
+}
+
+func TestBridgeStreamAndBackend_DeadlineFailureClosesBlockedStream(t *testing.T) {
+	streamConn, _ := tcpBridgeTestPair(t)
+	stream := &rejectedReadDeadlineStream{TCPConn: streamConn}
+	backend, backendPeer := net.Pipe()
+	defer backend.Close()
+	defer backendPeer.Close()
+	done := make(chan error, 1)
+	go func() { done <- bridgeStreamAndBackend(stream, bufio.NewReader(stream), backend) }()
+	require.NoError(t, backendPeer.Close())
+	select {
+	case err := <-done:
+		require.EqualError(t, err, "read deadline unavailable")
+	case <-time.After(time.Second):
+		t.Fatal("failed deadline left copy reader blocked")
+	}
+}
+
+func TestBridgeStreamAndBackend_HalfClosedTransferExtendsIdleDeadline(t *testing.T) {
+	previous := halfCloseIdleTimeout
+	halfCloseIdleTimeout = 200 * time.Millisecond
+	t.Cleanup(func() { halfCloseIdleTimeout = previous })
+	stream, peer := tcpBridgeTestPair(t)
+	backend, backendPeer := tcpBridgeTestPair(t)
+	done := make(chan error, 1)
+	go func() { done <- bridgeStreamAndBackend(stream, bufio.NewReader(stream), backend) }()
+	require.NoError(t, backendPeer.CloseWrite())
+	require.NoError(t, peer.SetReadDeadline(time.Now().Add(time.Second)))
+	_, err := io.ReadAll(peer)
+	require.NoError(t, err, "backend EOF should half-close response")
+	start := time.Now()
+	ticker := time.NewTicker(80 * time.Millisecond)
+	defer ticker.Stop()
+	for i := 0; i < 5; i++ {
+		<-ticker.C
+		select {
+		case err := <-done:
+			t.Fatalf("active transfer cut short: %v", err)
+		default:
+		}
+		_, err := peer.Write([]byte("x"))
+		require.NoError(t, err)
+		require.NoError(t, backendPeer.SetReadDeadline(time.Now().Add(time.Second)))
+		var b [1]byte
+		_, err = io.ReadFull(backendPeer, b[:])
+		require.NoError(t, err)
+		require.Equal(t, byte('x'), b[0])
+	}
+	require.Greater(t, time.Since(start), halfCloseIdleTimeout)
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("bridge did not stop after final idle interval")
 	}
 }

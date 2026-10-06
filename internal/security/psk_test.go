@@ -67,7 +67,8 @@ func TestClientPSK_Wrap(t *testing.T) {
 	psk := NewClientPSK(secret)
 
 	base := &mockReadWriteCloser{}
-	wrapped := psk.Wrap(base, tunnelID)
+	wrapped, err := psk.Wrap(base, tunnelID)
+	require.NoError(t, err)
 
 	require.NotNil(t, wrapped, "ClientPSK.Wrap() returned nil")
 	if wrapped == base {
@@ -91,13 +92,30 @@ func TestClientPSK_Wrap(t *testing.T) {
 	}
 }
 
+func TestClientPSK_Wrap_ReturnsErrorWhenRandomFails(t *testing.T) {
+	psk := NewClientPSK([]byte("test-secret"))
+	psk.randRead = func([]byte) (int, error) { return 0, io.ErrClosedPipe }
+
+	wrapped, err := psk.Wrap(&mockReadWriteCloser{}, "tunnel-123")
+	require.ErrorIs(t, err, io.ErrClosedPipe)
+	require.Nil(t, wrapped)
+}
+
+func wrapClientPSKForTest(t *testing.T, psk *ClientPSK, conn io.ReadWriteCloser) *ClientAEAD {
+	t.Helper()
+	wrapped, err := psk.Wrap(conn, "tunnel-123")
+	require.NoError(t, err)
+	aead, ok := wrapped.(*ClientAEAD)
+	require.True(t, ok)
+	return aead
+}
+
 func TestClientAEAD_Write(t *testing.T) {
 	secret := []byte("test-secret")
-	tunnelID := "tunnel-123"
 	psk := NewClientPSK(secret)
 
 	base := &mockReadWriteCloser{}
-	wrapped := psk.Wrap(base, tunnelID).(*ClientAEAD)
+	wrapped := wrapClientPSKForTest(t, psk, base)
 
 	testData := []byte("hello, world")
 	n, err := wrapped.Write(testData)
@@ -125,12 +143,11 @@ func TestClientAEAD_Write(t *testing.T) {
 
 func TestClientAEAD_Read(t *testing.T) {
 	secret := []byte("test-secret")
-	tunnelID := "tunnel-123"
 	psk := NewClientPSK(secret)
 
 	// Create a writer to encrypt data
 	writerBase := &mockReadWriteCloser{}
-	writer := psk.Wrap(writerBase, tunnelID).(*ClientAEAD)
+	writer := wrapClientPSKForTest(t, psk, writerBase)
 
 	// Write some data to get encrypted output
 	testData := []byte("hello, world")
@@ -141,7 +158,7 @@ func TestClientAEAD_Read(t *testing.T) {
 	readerBase := &mockReadWriteCloser{
 		readData: writerBase.writeData,
 	}
-	reader := psk.Wrap(readerBase, tunnelID).(*ClientAEAD)
+	reader := wrapClientPSKForTest(t, psk, readerBase)
 
 	// Read and decrypt
 	buf := make([]byte, 1024)
@@ -155,12 +172,11 @@ func TestClientAEAD_Read(t *testing.T) {
 
 func TestClientAEAD_Read_ShortBuffer(t *testing.T) {
 	secret := []byte("test-secret")
-	tunnelID := "tunnel-123"
 	psk := NewClientPSK(secret)
 
 	// Create encrypted data
 	writerBase := &mockReadWriteCloser{}
-	writer := psk.Wrap(writerBase, tunnelID).(*ClientAEAD)
+	writer := wrapClientPSKForTest(t, psk, writerBase)
 	testData := []byte("hello, world")
 	_, err := writer.Write(testData)
 	require.NoError(t, err)
@@ -169,7 +185,7 @@ func TestClientAEAD_Read_ShortBuffer(t *testing.T) {
 	readerBase := &mockReadWriteCloser{
 		readData: writerBase.writeData,
 	}
-	reader := psk.Wrap(readerBase, tunnelID).(*ClientAEAD)
+	reader := wrapClientPSKForTest(t, psk, readerBase)
 
 	// The rest of the frame is kept for the following reads, not dropped.
 	smallBuf := make([]byte, 5)
@@ -183,9 +199,9 @@ func TestClientAEAD_Read_ShortBuffer(t *testing.T) {
 func TestClientPSK_Wrap_UsesRandomNoncePrefix(t *testing.T) {
 	psk := NewClientPSK([]byte("test-secret"))
 	first, second := &mockReadWriteCloser{}, &mockReadWriteCloser{}
-	_, err := psk.Wrap(first, "tunnel-123").Write([]byte("same payload"))
+	_, err := wrapClientPSKForTest(t, psk, first).Write([]byte("same payload"))
 	require.NoError(t, err)
-	_, err = psk.Wrap(second, "tunnel-123").Write([]byte("same payload"))
+	_, err = wrapClientPSKForTest(t, psk, second).Write([]byte("same payload"))
 	require.NoError(t, err)
 
 	prefix := func(frame []byte) []byte { return frame[lengthFieldSize : lengthFieldSize+noncePrefixSize] }
@@ -196,13 +212,13 @@ func TestClientPSK_Wrap_UsesRandomNoncePrefix(t *testing.T) {
 
 func TestClientAEAD_Read_LegacyZeroPrefixNonce(t *testing.T) {
 	psk := NewClientPSK([]byte("test-secret"))
-	legacy := psk.Wrap(&mockReadWriteCloser{}, "tunnel-123").(*ClientAEAD)
+	legacy := wrapClientPSKForTest(t, psk, &mockReadWriteCloser{})
 	legacy.noncePrefix = [noncePrefixSize]byte{}
 	_, err := legacy.Write([]byte("legacy peer"))
 	require.NoError(t, err)
 	wire := legacy.base.(*mockReadWriteCloser).writeData
 
-	got, err := io.ReadAll(psk.Wrap(&mockReadWriteCloser{readData: wire}, "tunnel-123"))
+	got, err := io.ReadAll(wrapClientPSKForTest(t, psk, &mockReadWriteCloser{readData: wire}))
 	require.NoError(t, err)
 	assert.Equal(t, "legacy peer", string(got))
 }
@@ -211,7 +227,7 @@ func TestClientAEAD_Read_RejectsFrameLengthOutsideLimits(t *testing.T) {
 	for _, size := range []uint32{0, 15, maxAEADFrameBytes + 1, 0xFFFFFFFF} {
 		hdr := make([]byte, frameHeaderSize)
 		binary.BigEndian.PutUint32(hdr, size)
-		reader := NewClientPSK([]byte("test-secret")).Wrap(&mockReadWriteCloser{readData: hdr}, "tunnel-123")
+		reader := wrapClientPSKForTest(t, NewClientPSK([]byte("test-secret")), &mockReadWriteCloser{readData: hdr})
 		_, err := reader.Read(make([]byte, 16))
 		require.ErrorIs(t, err, errFrameLength, "declared length %d", size)
 	}
@@ -221,19 +237,19 @@ func TestClientAEAD_Write_SplitsPayloadAboveFrameCap(t *testing.T) {
 	psk := NewClientPSK([]byte("test-secret"))
 	payload := bytes.Repeat([]byte{0x5a}, maxFramePlaintext+10)
 	base := &mockReadWriteCloser{}
-	n, err := psk.Wrap(base, "tunnel-123").Write(payload)
+	n, err := wrapClientPSKForTest(t, psk, base).Write(payload)
 	require.NoError(t, err)
 	require.Equal(t, len(payload), n)
 	require.EqualValues(t, maxAEADFrameBytes, binary.BigEndian.Uint32(base.writeData[:lengthFieldSize]))
 
-	got, err := io.ReadAll(psk.Wrap(&mockReadWriteCloser{readData: base.writeData}, "tunnel-123"))
+	got, err := io.ReadAll(wrapClientPSKForTest(t, psk, &mockReadWriteCloser{readData: base.writeData}))
 	require.NoError(t, err)
 	require.True(t, bytes.Equal(payload, got), "payload split across frames must round-trip")
 }
 
 func TestClientAEAD_Write_EmptyPayloadEmitsNoFrame(t *testing.T) {
 	base := &mockReadWriteCloser{}
-	n, err := NewClientPSK([]byte("test-secret")).Wrap(base, "tunnel-123").Write(nil)
+	n, err := wrapClientPSKForTest(t, NewClientPSK([]byte("test-secret")), base).Write(nil)
 	require.NoError(t, err)
 	assert.Zero(t, n)
 	assert.Empty(t, base.writeData)
@@ -241,14 +257,13 @@ func TestClientAEAD_Write_EmptyPayloadEmitsNoFrame(t *testing.T) {
 
 func TestClientAEAD_Read_InvalidFrame(t *testing.T) {
 	secret := []byte("test-secret")
-	tunnelID := "tunnel-123"
 	psk := NewClientPSK(secret)
 
 	// Create reader with invalid data (too short)
 	readerBase := &mockReadWriteCloser{
 		readData: []byte{0, 0, 0}, // Too short for header
 	}
-	reader := psk.Wrap(readerBase, tunnelID).(*ClientAEAD)
+	reader := wrapClientPSKForTest(t, psk, readerBase)
 
 	buf := make([]byte, 1024)
 	_, err := reader.Read(buf)
@@ -257,7 +272,6 @@ func TestClientAEAD_Read_InvalidFrame(t *testing.T) {
 
 func TestClientAEAD_Read_CorruptedData(t *testing.T) {
 	secret := []byte("test-secret")
-	tunnelID := "tunnel-123"
 	psk := NewClientPSK(secret)
 
 	// Create valid header but corrupted ciphertext
@@ -270,7 +284,7 @@ func TestClientAEAD_Read_CorruptedData(t *testing.T) {
 	readerBase.readData[2] = 0
 	readerBase.readData[3] = 16 // 16 bytes of ciphertext
 
-	reader := psk.Wrap(readerBase, tunnelID).(*ClientAEAD)
+	reader := wrapClientPSKForTest(t, psk, readerBase)
 
 	buf := make([]byte, 1024)
 	_, err := reader.Read(buf)
@@ -279,11 +293,10 @@ func TestClientAEAD_Read_CorruptedData(t *testing.T) {
 
 func TestClientAEAD_Close(t *testing.T) {
 	secret := []byte("test-secret")
-	tunnelID := "tunnel-123"
 	psk := NewClientPSK(secret)
 
 	base := &mockReadWriteCloser{}
-	wrapped := psk.Wrap(base, tunnelID).(*ClientAEAD)
+	wrapped := wrapClientPSKForTest(t, psk, base)
 
 	err := wrapped.Close()
 	if err != nil {
@@ -296,14 +309,13 @@ func TestClientAEAD_Close(t *testing.T) {
 
 func TestClientAEAD_RoundTrip(t *testing.T) {
 	secret := []byte("test-secret")
-	tunnelID := "tunnel-123"
 	psk := NewClientPSK(secret)
 
 	// Create a writer connection
 	writerBase := &mockReadWriteCloser{
 		readData: make([]byte, 0),
 	}
-	writer := psk.Wrap(writerBase, tunnelID).(*ClientAEAD)
+	writer := wrapClientPSKForTest(t, psk, writerBase)
 
 	// Write test data
 	testData := []byte("round trip test data")
@@ -314,7 +326,7 @@ func TestClientAEAD_RoundTrip(t *testing.T) {
 	readerBase := &mockReadWriteCloser{
 		readData: writerBase.writeData,
 	}
-	reader := psk.Wrap(readerBase, tunnelID).(*ClientAEAD)
+	reader := wrapClientPSKForTest(t, psk, readerBase)
 
 	// Read and verify decryption
 	readBuf := make([]byte, 1024)
@@ -327,11 +339,10 @@ func TestClientAEAD_RoundTrip(t *testing.T) {
 
 func TestClientAEAD_MultipleWrites(t *testing.T) {
 	secret := []byte("test-secret")
-	tunnelID := "tunnel-123"
 	psk := NewClientPSK(secret)
 
 	base := &mockReadWriteCloser{}
-	wrapped := psk.Wrap(base, tunnelID).(*ClientAEAD)
+	wrapped := wrapClientPSKForTest(t, psk, base)
 
 	// Write multiple times
 	testData1 := []byte("first")

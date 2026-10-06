@@ -20,37 +20,6 @@ func TestComputeDataPlaneAuthWithPSK_Fallback(t *testing.T) {
 	assert.Empty(t, ComputeDataPlaneAuthWithPSK(tid, "", "", "", true))
 }
 
-func TestComputeDataPlaneAuth(t *testing.T) {
-	tests := []struct {
-		name         string
-		tunnelID     string
-		dpAuthToken  string
-		dpAuthSecret string
-		expected     string
-	}{
-		{"precomputed token", "tunnel-123", "abc123", "", "abc123"},
-		{"computed from secret", "tunnel-123", "", "my-secret", ""},
-		{"empty", "tunnel-123", "", "", ""},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := ComputeDataPlaneAuth(tt.tunnelID, tt.dpAuthToken, tt.dpAuthSecret)
-			switch {
-			case tt.dpAuthToken != "":
-				assert.Equal(t, tt.dpAuthToken, result, "ComputeDataPlaneAuth() = %v, want %v")
-			case tt.dpAuthSecret != "":
-				expected := computeHMAC(tt.dpAuthSecret, tt.tunnelID)
-				assert.Equal(t, expected, result, "ComputeDataPlaneAuth() = %v, want %v")
-			default:
-				if result != "" {
-					t.Errorf("ComputeDataPlaneAuth() = %q, want empty", result)
-				}
-			}
-		})
-	}
-}
-
 func TestComputeHMAC(t *testing.T) {
 	secret := "test-secret"
 	message := "test-message"

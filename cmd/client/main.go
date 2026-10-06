@@ -40,6 +40,23 @@ var (
 	version          = "dev" // Set via ldflags during build
 )
 
+type exitCodeError struct {
+	code int
+	err  error
+}
+
+func (e *exitCodeError) Error() string { return e.err.Error() }
+
+func (e *exitCodeError) Unwrap() error { return e.err }
+
+func exitCodeFor(err error) int {
+	var codeErr *exitCodeError
+	if errors.As(err, &codeErr) {
+		return codeErr.code
+	}
+	return 1
+}
+
 func main() {
 	// Check for version flag first
 	if len(os.Args) > 1 && (os.Args[1] == "--version" || os.Args[1] == "-v" || os.Args[1] == "version") {
@@ -61,7 +78,7 @@ func main() {
 			os.Exit(0)
 		}
 		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
+		os.Exit(exitCodeFor(err))
 	}
 
 	if err := runClientWorkflow(cfg); err != nil {
@@ -84,8 +101,7 @@ func parseConfig() (*config.Config, error) {
 		return nil, err
 	}
 	if err := config.Validate(cfg); err != nil {
-		fmt.Println("❌", err.Error())
-		os.Exit(2)
+		return nil, &exitCodeError{code: 2, err: fmt.Errorf("❌ %w", err)}
 	}
 	if err := ensureHTTPHasTarget(cfg); err != nil {
 		return nil, err
@@ -227,7 +243,7 @@ func handleUDPProtocol(
 	if config.IsUDPReverseMode(cfg) {
 		strategy := dp.NewStrategy(
 			strings.ToLower(cfg.DataPlane), cfg.ServerURL, tun.ID, authToken,
-			cfg.UDPDst, cfg.UDPListen, runtime, enc,
+			cfg.UDPDst, cfg.UDPListen, runtime, enc, cfg.BackoffInitial, cfg.BackoffMax,
 		)
 		return handleUDPReverseMode(ctx, terminal, strategy, cfg.ServerURL, tun.ID, httpClient, bearer, csrf)
 	}

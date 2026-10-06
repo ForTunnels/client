@@ -5,15 +5,149 @@ package dataplane
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
+	"github.com/xtaci/smux"
+
+	"github.com/fortunnels/client/internal/config"
+	"github.com/fortunnels/client/internal/support"
+	"github.com/fortunnels/client/shared/wsconn"
 )
+
+func TestStartDataPlaneUDPContext_WrapFailureIsPermanent(t *testing.T) {
+	var websocketConnections atomic.Int32
+	upgraded := make(chan struct{}, 2)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		websocketConnections.Add(1)
+		upgraded <- struct{}{}
+		defer conn.Close()
+
+		session, err := smux.Server(wsconn.NewWSConn(conn), smux.DefaultConfig())
+		if err != nil {
+			return
+		}
+		defer session.Close()
+		for {
+			stream, err := session.AcceptStream()
+			if err != nil {
+				return
+			}
+			go func(stream io.ReadWriteCloser) {
+				_, _ = io.Copy(io.Discard, stream)
+				_ = stream.Close()
+			}(stream)
+		}
+	}))
+	defer server.Close()
+
+	wrapFailure := errors.New("nonce source failed")
+	originalWrapper := wrapClientStream
+	var wrapperCalls atomic.Int32
+	wrapClientStream = func(io.ReadWriteCloser, string, config.EncryptionSettings) (io.ReadWriteCloser, error) {
+		wrapperCalls.Add(1)
+		return nil, wrapFailure
+	}
+	t.Cleanup(func() { wrapClientStream = originalWrapper })
+
+	runtime := config.RuntimeSettings{
+		PingInterval:          30 * time.Second,
+		PingTimeout:           5 * time.Second,
+		SmuxKeepAliveInterval: 30 * time.Second,
+		SmuxKeepAliveTimeout:  90 * time.Second,
+	}
+	encryption := config.EncryptionSettings{Enabled: true, PSK: "test-secret"}
+	listenAddr := "127.0.0.1:0"
+
+	err := StartDataPlaneUDPContext(context.Background(), server.URL, "t1", "127.0.0.1:53", listenAddr, runtime, encryption, "auth")
+	var permanent permanentError
+	require.ErrorAs(t, err, &permanent)
+	require.ErrorIs(t, err, wrapFailure)
+	select {
+	case <-upgraded:
+	case <-time.After(time.Second):
+		t.Fatal("UDP startup did not establish its WebSocket session")
+	}
+	require.EqualValues(t, 1, websocketConnections.Load())
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	strategy := NewStrategy("ws", server.URL, "t1", "auth", "127.0.0.1:53", listenAddr, runtime, encryption, time.Hour, time.Hour)
+	err = strategy.RunContext(ctx)
+	require.ErrorAs(t, err, &permanent)
+	require.ErrorIs(t, err, wrapFailure)
+	select {
+	case <-upgraded:
+	case <-time.After(time.Second):
+		t.Fatal("WebSocket strategy did not establish its session")
+	}
+	require.EqualValues(t, 2, websocketConnections.Load())
+	require.EqualValues(t, 2, wrapperCalls.Load())
+}
+
+type trackedUDPStream struct {
+	net.Conn
+	closed atomic.Bool
+}
+
+func (s *trackedUDPStream) Close() error {
+	s.closed.Store(true)
+	return s.Conn.Close()
+}
+
+func TestBridgeUDPStreamAndBackend_BackendReadErrorClosesStream(t *testing.T) {
+	reserved, err := listenTestUDP()
+	require.NoError(t, err)
+	addr := reserved.LocalAddr().(*net.UDPAddr)
+	require.NoError(t, reserved.Close())
+	backend, err := net.DialUDP("udp", nil, addr)
+	require.NoError(t, err)
+	defer backend.Close()
+	streamConn, peer := net.Pipe()
+	stream := &trackedUDPStream{Conn: streamConn}
+	defer stream.Close()
+	defer peer.Close()
+	require.NoError(t, peer.SetDeadline(time.Now().Add(2*time.Second)))
+	reported := make(chan error, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- bridgeUDPStreamAndBackend(stream, backend, addr.String(), func(dst string, err error) {
+			if dst == addr.String() {
+				reported <- err
+			}
+		})
+	}()
+	require.NoError(t, writeUDPPacket(peer, []byte("trigger ICMP")))
+	select {
+	case err := <-done:
+		require.Error(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("backend read failure left stream blocked")
+	}
+	require.True(t, stream.closed.Load())
+	select {
+	case err := <-reported:
+		require.Error(t, err)
+	default:
+		t.Fatal("backend failure was not reported")
+	}
+}
 
 // mockWriter implements io.Writer for testing
 type mockWriter struct {
@@ -162,19 +296,28 @@ func TestReadUDPPacket(t *testing.T) {
 
 func TestReadUDPPacket_InvalidSize(t *testing.T) {
 	tests := []struct {
-		name    string
-		frame   []byte
-		wantErr bool
+		name          string
+		frame         []byte
+		wantErr       error
+		wantBenignErr bool
 	}{
 		{
-			name:    "zero length",
-			frame:   []byte{0, 0},
-			wantErr: true,
+			name:          "zero length",
+			frame:         []byte{0, 0},
+			wantErr:       errInvalidUDPFrame,
+			wantBenignErr: false,
 		},
 		{
-			name:    "incomplete header",
-			frame:   []byte{0},
-			wantErr: true,
+			name:          "oversized UDP payload length",
+			frame:         []byte{0xff, 0xff},
+			wantErr:       errInvalidUDPFrame,
+			wantBenignErr: false,
+		},
+		{
+			name:          "incomplete header",
+			frame:         []byte{0},
+			wantErr:       io.ErrUnexpectedEOF,
+			wantBenignErr: true,
 		},
 	}
 
@@ -182,8 +325,11 @@ func TestReadUDPPacket_InvalidSize(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			reader := &mockReader{data: tt.frame}
 			_, err := readUDPPacket(reader)
-			if (err != nil) != tt.wantErr {
+			if !errors.Is(err, tt.wantErr) {
 				t.Errorf("readUDPPacket() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if got := support.IsBenignCopyError(err); got != tt.wantBenignErr {
+				t.Errorf("IsBenignCopyError(%v) = %v, want %v", err, got, tt.wantBenignErr)
 			}
 		})
 	}

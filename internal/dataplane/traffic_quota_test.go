@@ -34,20 +34,30 @@ func TestTrafficQuota_InBandFlatLifecyclePayload(t *testing.T) {
 
 func TestTrafficQuota_TransportCancellationNoRetry(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	started := make(chan struct{})
 	var starts atomic.Int32
-	strategy := contextStrategy("", "", "", func() error {
-		t.Fatal("non-context runner must not be used")
-		return nil
-	}, func(ctx context.Context) error {
+	strategy := contextStrategy("", "", "", func(ctx context.Context) error {
 		starts.Add(1)
+		close(started)
 		<-ctx.Done()
 		return ctx.Err()
 	})
 
 	done := make(chan error, 1)
 	go func() { done <- strategy.RunContext(ctx) }()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("transport attempt did not start")
+	}
 	cancel()
-	require.ErrorIs(t, <-done, context.Canceled)
+	select {
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
+	case <-time.After(time.Second):
+		t.Fatal("transport attempt did not stop on cancellation")
+	}
 	require.Equal(t, int32(1), starts.Load())
 }
 

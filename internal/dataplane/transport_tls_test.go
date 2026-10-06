@@ -66,6 +66,57 @@ func TestTransportTLS_WrongNameDenied(t *testing.T) {
 	}
 }
 
+func TestTransportTLS_CertificateFailuresArePermanent(t *testing.T) {
+	t.Parallel()
+
+	fixture := newTransportTLSFixture(t)
+	cases := []struct {
+		name   string
+		caPath string
+		server string
+	}{
+		{name: "untrusted", caPath: "", server: "127.0.0.1"},
+		{name: "wrong name", caPath: fixture.caPath, server: "wrong.example"},
+	}
+	for _, tc := range cases {
+		for plane, handshake := range map[string]func(*testing.T, transportTLSFixture, string, string) error{
+			"quic": runQUICTransportTLSHandshake,
+			"dtls": runDTLSTransportTLSHandshake,
+		} {
+			err := handshake(t, fixture, tc.caPath, tc.server)
+			if err == nil {
+				t.Fatalf("%s %s: certificate accepted", plane, tc.name)
+			}
+			var permanent permanentError
+			if !errors.As(classifyTransportDialError(err), &permanent) {
+				t.Fatalf("%s %s: certificate failure %q is retryable", plane, tc.name, err)
+			}
+		}
+	}
+}
+
+func TestClassifyTransportDialError_KeepsOtherErrorsRetryable(t *testing.T) {
+	t.Parallel()
+
+	if got := classifyTransportDialError(nil); got != nil {
+		t.Fatalf("nil error classified as %v", got)
+	}
+	for _, err := range []error{
+		errors.New("timeout: no recent network activity"),
+		&net.OpError{Op: "dial", Err: errors.New("connection refused")},
+	} {
+		var permanent permanentError
+		if errors.As(classifyTransportDialError(err), &permanent) {
+			t.Fatalf("transient error %q classified as permanent", err)
+		}
+	}
+	verifyErr := &tls.CertificateVerificationError{Err: x509.UnknownAuthorityError{}}
+	var permanent permanentError
+	if !errors.As(classifyTransportDialError(fmt.Errorf("dial: %w", verifyErr)), &permanent) {
+		t.Fatal("wrapped certificate verification error is retryable")
+	}
+}
+
 func TestTransportTLS_InvalidConfigurationDenied(t *testing.T) {
 	t.Parallel()
 

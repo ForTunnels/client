@@ -513,17 +513,53 @@ func runWebhookMockUpdate(args []string) int {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		return exitError
 	}
-	var maxUsesPtr *int
-	if *maxUses > 0 {
-		maxUsesPtr = intPtr(*maxUses)
+	rules, err := client.ListMock(context.Background(), *ep)
+	if err != nil {
+		return webhookErrorExit("mock list failed", err)
 	}
-	resp := webhookapi.MockResp{Status: *status, Body: *body}
-	if *delayMS >= 0 {
-		resp.DelayMS = *delayMS
+	var existing *webhookapi.MockRule
+	for i := range rules {
+		if rules[i].ID == *ruleID {
+			existing = &rules[i]
+			break
+		}
 	}
-	rule, err := client.UpdateMock(context.Background(), *ep, *ruleID, &webhookapi.MockRuleInput{
-		Method: *method, Path: *path, Response: resp, MaxUses: maxUsesPtr, Version: *version,
+	if existing == nil {
+		fmt.Fprintln(os.Stderr, "rule not found")
+		return exitError
+	}
+	enabled := existing.Enabled
+	input := &webhookapi.MockRuleInput{
+		Priority: existing.Priority,
+		Enabled:  &enabled,
+		Method:   existing.Method,
+		PathMode: existing.PathMode,
+		Path:     existing.Path,
+		Response: existing.Response,
+		MaxUses:  existing.MaxUses,
+		Version:  existing.Version,
+	}
+	fs.Visit(func(f *flag.Flag) {
+		switch f.Name {
+		case "method":
+			input.Method = *method
+		case "path":
+			input.Path = *path
+		case "status":
+			input.Response.Status = *status
+		case "body":
+			input.Response.Body = *body
+		case "delay-ms":
+			input.Response.DelayMS = *delayMS
+		case "version":
+			input.Version = *version
+		case "max-uses":
+			if *maxUses > 0 {
+				input.MaxUses = intPtr(*maxUses)
+			}
+		}
 	})
+	rule, err := client.UpdateMock(context.Background(), *ep, *ruleID, input)
 	if err != nil {
 		return webhookErrorExit("mock update failed", err)
 	}
