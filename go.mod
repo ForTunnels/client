@@ -2,7 +2,7 @@ module github.com/fortunnels/client
 
 go 1.26.0
 
-toolchain go1.26.6
+toolchain go1.26.9
 
 require (
 	github.com/gorilla/websocket v1.5.3
